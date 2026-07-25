@@ -63,7 +63,9 @@ float GalleryOverlay::GetFilmCellSize() const {
     if (winW <= 0.0f || winH <= 0.0f) return preferredH;
     
     float scale = g_uiScale > 0.0f ? g_uiScale : 1.0f;
-    float preferredStripH = (2.0f * PADDING + preferredH) * scale;
+    float gapRatio = 0.10f;
+    float extraPad = 3.0f * scale;
+    float preferredStripH = (preferredH * (1.0f + 2.0f * gapRatio)) * scale + 2.0f * extraPad;
     
     float effWinH = winH - preferredStripH;
     if (effWinH < 1.0f) effWinH = 1.0f;
@@ -79,7 +81,7 @@ float GalleryOverlay::GetFilmCellSize() const {
         float maxAllowedStripH = winH - targetImgH;
         
         // Convert to cell size
-        float maxAllowedCellH = maxAllowedStripH / scale - 2.0f * PADDING;
+        float maxAllowedCellH = ((maxAllowedStripH - 2.0f * extraPad) / scale) / (1.0f + 2.0f * gapRatio);
         
         // Clamp between physical limit (80px) and preferred height
         float adaptiveH = (std::max)(80.0f, (std::min)(preferredH, maxAllowedCellH));
@@ -288,9 +290,12 @@ void GalleryOverlay::Update(float deltaTime, HWND hwnd) {
         }
         
         float scale = g_uiScale > 0.0f ? g_uiScale : 1.0f;
+        float filmCellSize = GetFilmCellSize() * scale;
+        float filmGap = filmCellSize * 0.10f;
+        float filmPadding = filmGap + 3.0f * scale;
         float targetH = (m_mode == GalleryMode::FullGrid || m_targetGridProgress > 0.5f)
             ? height
-            : ((GetFilmCellSize() + 2.0f * PADDING) * scale);
+            : (filmCellSize + 2.0f * filmPadding);
             
         float tolerance = 40.0f * scale;
             
@@ -366,7 +371,10 @@ void GalleryOverlay::Update(float deltaTime, HWND hwnd) {
 
 float GalleryOverlay::GetVisualHeight(float winH) const {
     float scale = g_uiScale > 0.0f ? g_uiScale : 1.0f;
-    float filmstripH = (PADDING + GetFilmCellSize() + PADDING) * scale; // Adjust for DPI
+    float cellSize = GetFilmCellSize() * scale;
+    float filmGap = cellSize * 0.10f;
+    float filmPadding = filmGap + 3.0f * scale;
+    float filmstripH = cellSize + 2.0f * filmPadding;
     float gridH = winH;
     float currentH = filmstripH + (gridH - filmstripH) * m_gridProgress;
     return currentH * m_transitionProgress;
@@ -375,9 +383,12 @@ float GalleryOverlay::GetVisualHeight(float winH) const {
 bool GalleryOverlay::HitTestArea(int x, int y, float winW, float winH) const {
     if (!IsVisible()) return false;
     float scale = g_uiScale > 0.0f ? g_uiScale : 1.0f;
+    float cellSize = GetFilmCellSize() * scale;
+    float filmGap = cellSize * 0.10f;
+    float filmPadding = filmGap + 3.0f * scale;
     float targetH = (m_mode == GalleryMode::FullGrid || m_targetGridProgress > 0.5f)
         ? winH
-        : ((GetFilmCellSize() + 2.0f * PADDING) * scale);
+        : (cellSize + 2.0f * filmPadding);
     // Outer bounds tolerance zone scaled by DPI to prevent mistriggering auto-hide at edges
     float tolerance = 40.0f * scale;
     return (x >= -(int)tolerance && x <= (int)(winW + tolerance) && y >= -(int)tolerance && y <= (int)(targetH + tolerance));
@@ -573,7 +584,7 @@ void GalleryOverlay::Render(ID2D1DeviceContext* pDC, const D2D1_SIZE_F& size, ID
     float barPadding = (m_gridProgress > 0.5f) ? BOTTOM_BAR_HEIGHT * scale : 0.0f;
     m_maxScroll = std::max(0.0f, currentPadding * 2 + gridRows * (gridCellH + currentGap) - currentGap + barPadding - size.height);
     
-    float filmLeftMargin = 48.0f * scale;
+    float filmLeftMargin = FILM_LEFT_MARGIN * scale;
     m_maxScrollLeft = std::max(0.0f, filmLeftMargin * 2.0f + count * (filmCellW + currentGap) - currentGap - size.width);
     
     // If newly opened or size changed, ensure selection is visible (centered)
@@ -950,66 +961,48 @@ void GalleryOverlay::Render(ID2D1DeviceContext* pDC, const D2D1_SIZE_F& size, ID
         }
     }
     
-    // 5. Left/Right Navigation Arrows Rendering (Refined Mini-Glass Circle Buttons)
+    // 5. Left/Right Navigation Arrows Rendering (Circle-less Slim Tall Vector Arrows with Accent Color Highlight)
     if (m_gridProgress < 0.2f && g_config.NavIndicator == 0) {
-        float arrowSize = 7.5f * g_uiScale;
-        float btnRadius = 13.0f * g_uiScale;
-        float strokeW = 1.5f * g_uiScale;
+        float strokeW = 1.75f * g_uiScale;
+        float filmLeftMargin = FILM_LEFT_MARGIN * scale;
+        float filmCellSize = GetFilmCellSize() * scale;
+        float filmGap = filmCellSize * 0.10f;
+        float filmPadding = filmGap + 3.0f * scale;
+        float arrowCy = filmPadding + filmCellSize / 2.0f;
         
-        D2D1_COLOR_F fillClr = isLight ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.85f) : D2D1::ColorF(0.10f, 0.12f, 0.16f, 0.85f);
-        D2D1_COLOR_F borderClr = isLight ? D2D1::ColorF(0.70f, 0.75f, 0.85f, 0.60f) : D2D1::ColorF(0.35f, 0.40f, 0.52f, 0.50f);
-        D2D1_COLOR_F arrowClr = isLight ? D2D1::ColorF(0.12f, 0.12f, 0.15f, 1.0f) : D2D1::ColorF(0.96f, 0.98f, 1.0f, 1.0f);
-
-        float filmLeftMargin = 48.0f * scale;
+        // Slim-tall arrow coordinates (~6px width x ~23px height)
+        float dx = 2.5f * g_uiScale;
+        float dy = 11.5f * g_uiScale;
+        float tipDx = 3.5f * g_uiScale;
 
         // Left Arrow
         if (m_arrowLeftAlpha > 0.01f) {
             float cx = filmLeftMargin / 2.0f;
-            float cy = (PADDING + GetFilmCellSize() / 2.0f) * scale;
-            D2D1_ELLIPSE ellipse = D2D1::Ellipse(D2D1::Point2F(cx, cy), btnRadius, btnRadius);
+            float cy = arrowCy;
             
-            m_brushBg->SetColor(fillClr);
-            m_brushBg->SetOpacity(m_arrowLeftAlpha * m_transitionProgress);
-            pDC->FillEllipse(ellipse, m_brushBg.Get());
-            
-            m_brushOverlay->SetColor(borderClr);
-            m_brushOverlay->SetOpacity(m_arrowLeftAlpha * m_transitionProgress);
-            pDC->DrawEllipse(ellipse, m_brushOverlay.Get(), 0.75f * g_uiScale);
-            
-            m_brushText->SetColor(arrowClr);
-            m_brushText->SetOpacity(m_arrowLeftAlpha * m_transitionProgress);
-            pDC->DrawLine(D2D1::Point2F(cx + arrowSize * 0.4f, cy - arrowSize * 0.6f), D2D1::Point2F(cx - arrowSize * 0.4f, cy), m_brushText.Get(), strokeW);
-            pDC->DrawLine(D2D1::Point2F(cx - arrowSize * 0.4f, cy), D2D1::Point2F(cx + arrowSize * 0.4f, cy + arrowSize * 0.6f), m_brushText.Get(), strokeW);
+            m_brushSelection->SetOpacity(m_arrowLeftAlpha * m_transitionProgress);
+            pDC->DrawLine(D2D1::Point2F(cx + dx, cy - dy), D2D1::Point2F(cx - tipDx, cy), m_brushSelection.Get(), strokeW);
+            pDC->DrawLine(D2D1::Point2F(cx - tipDx, cy), D2D1::Point2F(cx + dx, cy + dy), m_brushSelection.Get(), strokeW);
         }
         
         // Right Arrow
         if (m_arrowRightAlpha > 0.01f) {
             float cx = size.width - filmLeftMargin / 2.0f;
-            float cy = (PADDING + GetFilmCellSize() / 2.0f) * scale;
-            D2D1_ELLIPSE ellipse = D2D1::Ellipse(D2D1::Point2F(cx, cy), btnRadius, btnRadius);
+            float cy = arrowCy;
             
-            m_brushBg->SetColor(fillClr);
-            m_brushBg->SetOpacity(m_arrowRightAlpha * m_transitionProgress);
-            pDC->FillEllipse(ellipse, m_brushBg.Get());
-            
-            m_brushOverlay->SetColor(borderClr);
-            m_brushOverlay->SetOpacity(m_arrowRightAlpha * m_transitionProgress);
-            pDC->DrawEllipse(ellipse, m_brushOverlay.Get(), 0.75f * g_uiScale);
-            
-            m_brushText->SetColor(arrowClr);
-            m_brushText->SetOpacity(m_arrowRightAlpha * m_transitionProgress);
-            pDC->DrawLine(D2D1::Point2F(cx - arrowSize * 0.4f, cy - arrowSize * 0.6f), D2D1::Point2F(cx + arrowSize * 0.4f, cy), m_brushText.Get(), strokeW);
-            pDC->DrawLine(D2D1::Point2F(cx + arrowSize * 0.4f, cy), D2D1::Point2F(cx - arrowSize * 0.4f, cy + arrowSize * 0.6f), m_brushText.Get(), strokeW);
+            m_brushSelection->SetOpacity(m_arrowRightAlpha * m_transitionProgress);
+            pDC->DrawLine(D2D1::Point2F(cx - dx, cy - dy), D2D1::Point2F(cx + tipDx, cy), m_brushSelection.Get(), strokeW);
+            pDC->DrawLine(D2D1::Point2F(cx + tipDx, cy), D2D1::Point2F(cx - dx, cy + dy), m_brushSelection.Get(), strokeW);
         }
         
-        m_brushText->SetOpacity(1.0f); // Reset opacity
+        m_brushSelection->SetOpacity(1.0f); // Reset opacity
     }
     
     // 6a. Pin button (top-left corner of filmstrip) - only visible in filmstrip mode
     if (m_gridProgress < 0.2f) {
-        float pinSize = 16.0f * g_uiScale;
-        float pinX = 16.0f * g_uiScale;
-        float pinY = 16.0f * g_uiScale;
+        float pinSize = 12.0f * g_uiScale;
+        float pinX = 14.0f * g_uiScale;
+        float pinY = 14.0f * g_uiScale;
         D2D1_RECT_F pinRect = D2D1::RectF(pinX, pinY, pinX + pinSize, pinY + pinSize);
         
         ID2D1SolidColorBrush* pPinBrush = nullptr;
@@ -1331,9 +1324,9 @@ bool GalleryOverlay::OnLButtonDown(int x, int y) {
     // Check filmstrip left/right arrows
     if (m_gridProgress < 0.2f) {
         float scale = g_uiScale > 0.0f ? g_uiScale : 1.0f;
-        float filmLeftMargin = 48.0f * scale;
+        float filmLeftMargin = FILM_LEFT_MARGIN * scale;
         float galleryH = GetVisualHeight(m_lastSize.height);
-        bool isLeftPinZone = (fx >= 10.0f * scale && fx <= 38.0f * scale && fy >= 10.0f * scale && fy <= 38.0f * scale);
+        bool isLeftPinZone = (fx >= 6.0f * scale && fx <= 30.0f * scale && fy >= 6.0f * scale && fy <= 30.0f * scale);
         bool inYRange = (fy >= 2.0f * scale && fy <= galleryH - 2.0f * scale);
         
         if (inYRange && (fx >= 2.0f * scale && fx <= filmLeftMargin - 2.0f * scale) && !isLeftPinZone) {
@@ -1460,9 +1453,9 @@ bool GalleryOverlay::OnMouseMove(int x, int y) {
     // Update arrow hover states (filmstrip mode)
     if (m_gridProgress < 0.2f) {
         float scale = g_uiScale > 0.0f ? g_uiScale : 1.0f;
-        float filmLeftMargin = 48.0f * scale;
+        float filmLeftMargin = FILM_LEFT_MARGIN * scale;
         float galleryH = GetVisualHeight(m_lastSize.height);
-        bool isLeftPinZone = (fx >= 10.0f * scale && fx <= 38.0f * scale && fy >= 10.0f * scale && fy <= 38.0f * scale);
+        bool isLeftPinZone = (fx >= 6.0f * scale && fx <= 30.0f * scale && fy >= 6.0f * scale && fy <= 30.0f * scale);
         bool inYRange = (fy >= 2.0f * scale && fy <= galleryH - 2.0f * scale);
         bool leftHover = inYRange && (fx >= 2.0f * scale && fx <= filmLeftMargin - 2.0f * scale) && !isLeftPinZone;
         bool rightHover = inYRange && (fx >= m_lastSize.width - filmLeftMargin + 2.0f * scale && fx <= m_lastSize.width - 2.0f * scale);
@@ -1475,9 +1468,9 @@ bool GalleryOverlay::OnMouseMove(int x, int y) {
     
     // Pin button hover - only in filmstrip mode
     {
-        float pinSize = 16.0f * g_uiScale;
-        float pinX = 16.0f * g_uiScale;
-        float pinY = 16.0f * g_uiScale;
+        float pinSize = 12.0f * g_uiScale;
+        float pinX = 14.0f * g_uiScale;
+        float pinY = 14.0f * g_uiScale;
         bool pinHover = (m_gridProgress < 0.2f) && (fx >= pinX && fx <= pinX + pinSize && fy >= pinY && fy <= pinY + pinSize);
         if (pinHover != m_pinHover) {
             m_pinHover = pinHover;
@@ -1702,7 +1695,7 @@ void GalleryOverlay::EnsureVisible(int index, const D2D1_SIZE_F& size, bool smoo
         }
     } else {
         float cellW = GetFilmCellSize() * scale;
-        float filmLeftMargin = 48.0f * scale;
+        float filmLeftMargin = FILM_LEFT_MARGIN * scale;
         float itemLeft = filmLeftMargin + index * (cellW + currentGap);
         
         float itemCenter = itemLeft + cellW * 0.5f;
@@ -1723,8 +1716,8 @@ int GalleryOverlay::HitTestClient(int x, int y) {
 
 D2D1_RECT_F GalleryOverlay::GetItemRect(int index, float winW) const {
     float scale = g_uiScale > 0.0f ? g_uiScale : 1.0f;
-    float currentPadding = PADDING * scale;
-    float availWidth = winW - currentPadding * 2;
+    float gridPadding = PADDING * scale;
+    float availWidth = winW - gridPadding * 2;
     int gridCols = m_cols;
     if (gridCols < 1) gridCols = 1;
     
@@ -1740,15 +1733,16 @@ D2D1_RECT_F GalleryOverlay::GetItemRect(int index, float winW) const {
     float gridCellH = gridCellW;
     
     float filmCellH = GetFilmCellSize() * scale;
-    float filmLeftMargin = 48.0f * scale;
+    float filmLeftMargin = FILM_LEFT_MARGIN * scale;
     
     float fx = filmLeftMargin + index * (filmCellW + currentGap) - m_scrollLeft;
-    float fy = currentPadding;
+    float filmPadding = filmGap + 3.0f * scale;
+    float fy = filmPadding + (gridPadding - filmPadding) * m_gridProgress;
     
     int col = index % gridCols;
     int row = index / gridCols;
-    float gx = currentPadding + col * (gridCellW + currentGap);
-    float gy = currentPadding + row * (gridCellH + currentGap) - m_scrollTop;
+    float gx = gridPadding + col * (gridCellW + currentGap);
+    float gy = gridPadding + row * (gridCellH + currentGap) - m_scrollTop;
     
     float cx = fx + (gx - fx) * m_gridProgress;
     float cy = fy + (gy - fy) * m_gridProgress;
@@ -1764,7 +1758,7 @@ int GalleryOverlay::HitTest(float x, float y) {
     
     if (m_gridProgress < 0.2f) {
         float scale = g_uiScale > 0.0f ? g_uiScale : 1.0f;
-        float filmLeftMargin = 48.0f * scale;
+        float filmLeftMargin = FILM_LEFT_MARGIN * scale;
         if (x < filmLeftMargin || x > m_lastSize.width - filmLeftMargin) {
             return -1;
         }
