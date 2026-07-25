@@ -790,12 +790,28 @@ static RECT ExpandWindowRectToTargetWithinBounds(const RECT& currentRect, int ta
 static D2D1_SIZE_F GetLogicalImageSize();
 D2D1_SIZE_F GetVisualImageSize();
 VisualState GetVisualState();
+static float ComputeBaseFitScaleForVisual(const VisualState& vs, float winW, float winH);
 
 void ApplyFullScreenZoomMode(HWND hwnd) {
     if (!GetPaneContext(PaneSlot::Primary).resource || (!g_isFullScreen && !IsZoomed(hwnd))) return;
 
+    // Helper: compute the Zoom value to make the image fit the current window,
+    // accounting for the baseFit cap on small images.
+    auto computeFitZoomLocal = [&]() -> float {
+        D2D1_SIZE_F effSize = GetVisualImageSize();
+        if (effSize.width <= 0 || effSize.height <= 0) return 1.0f;
+        RECT rc; GetClientRect(hwnd, &rc);
+        float fW = (float)rc.right;
+        float fH = (float)rc.bottom;
+        if (fW <= 0 || fH <= 0) return 1.0f;
+        float rawFit = std::min(fW / effSize.width, fH / effSize.height);
+        VisualState vs = GetVisualState();
+        float cappedFit = ComputeBaseFitScaleForVisual(vs, fW, fH);
+        return (cappedFit > 0.0001f) ? rawFit / cappedFit : 1.0f;
+    };
+
     if (g_config.FullScreenZoomMode == 0) { // Fit
-        GetPaneContext(PaneSlot::Primary).view.Zoom = 1.0f;
+        GetPaneContext(PaneSlot::Primary).view.Zoom = computeFitZoomLocal();
     } else { // Auto (100% / Fit)
         D2D1_SIZE_F effSize = GetVisualImageSize();
         float imgW = effSize.width;
@@ -825,7 +841,7 @@ void ApplyFullScreenZoomMode(HWND hwnd) {
         if (fitScale > renderScaleTarget) {
             GetPaneContext(PaneSlot::Primary).view.Zoom = renderScaleTarget / fitScale;
         } else {
-            GetPaneContext(PaneSlot::Primary).view.Zoom = 1.0f; // Fit
+            GetPaneContext(PaneSlot::Primary).view.Zoom = computeFitZoomLocal(); // Fit
         }
     }
     GetPaneContext(PaneSlot::Primary).view.PanX = 0;
@@ -1233,7 +1249,7 @@ bool GetCurrentPixelArtState(HWND hwnd) {
     if (winW <= 0 || winH <= 0) return false;
 
     float fitScale = std::min(winW / imgW, winH / imgH);
-    if (imgW < 200.0f && imgH < 200.0f && !GetPaneContext(PaneSlot::Primary).resource.isSvg) {
+    if (imgW < 200.0f && imgH < 200.0f) {
         if (fitScale > 1.0f) fitScale = 1.0f;
     }
 
@@ -2080,11 +2096,13 @@ static bool UseSvgViewportRendering(const ImageResource& res) {
     return res.isSvg && res.svgDoc;
 }
 
+static float ComputeBaseFitScaleForVisual(const VisualState& vs, float winW, float winH);
+
 static float ComputeSvgViewportScale(float winW, float winH, const VisualState& vs) {
     if (vs.VisualSize.width <= 0.0f || vs.VisualSize.height <= 0.0f) {
         return 1.0f;
     }
-    const float baseFit = std::min(winW / vs.VisualSize.width, winH / vs.VisualSize.height);
+    const float baseFit = ComputeBaseFitScaleForVisual(vs, winW, winH);
     return baseFit * GetPaneContext(PaneSlot::Primary).view.Zoom;
 }
 
@@ -2378,9 +2396,8 @@ bool RenderImageToDComp(HWND hwnd, ImageResource& res, bool isFastUpgrade) {
             
             if (contentW > 0 && contentH > 0) {
                  float scale = std::min(maxW / contentW, maxH / contentH);
-                 // [SVG Lossless] Don't cap scale for vector formats - they render at any resolution
-                 // Bitmaps: cap at 1.0 to prevent blurry upscaling
-                 if (scale > 1.0f && !res.isSvg) scale = 1.0f;
+                 // Bitmaps and SVGs: cap at 1.0 to preserve 100% initial zoom for small images
+                 if (scale > 1.0f) scale = 1.0f;
                  
                  targetWinW = (UINT)(contentW * scale);
                  targetWinH = (UINT)(contentH * scale);
@@ -3133,8 +3150,14 @@ static bool g_showControls = true;
 // --- Helpers for Zoom Consistency [Unification] ---
 
 static D2D1_SIZE_F GetLogicalImageSize() {
-    if (GetPaneContext(PaneSlot::Primary).resource && GetPaneContext(PaneSlot::Primary).resource.isSvg && GetPaneContext(PaneSlot::Primary).resource.svgW > 0.0f && GetPaneContext(PaneSlot::Primary).resource.svgH > 0.0f) {
-        return GetPaneContext(PaneSlot::Primary).resource.GetSize();
+    if (GetPaneContext(PaneSlot::Primary).resource && GetPaneContext(PaneSlot::Primary).resource.isSvg) {
+        if (GetPaneContext(PaneSlot::Primary).resource.svgW > 0.0f && GetPaneContext(PaneSlot::Primary).resource.svgH > 0.0f) {
+            return GetPaneContext(PaneSlot::Primary).resource.GetSize();
+        }
+        if (GetPaneContext(PaneSlot::Primary).metadata.Width > 0 && GetPaneContext(PaneSlot::Primary).metadata.Height > 0) {
+            return D2D1::SizeF((float)GetPaneContext(PaneSlot::Primary).metadata.Width, (float)GetPaneContext(PaneSlot::Primary).metadata.Height);
+        }
+        return D2D1::SizeF(512.0f, 512.0f);
     }
 
     if (GetPaneContext(PaneSlot::Primary).metadata.Width > 8192 || GetPaneContext(PaneSlot::Primary).metadata.Height > 8192) {
@@ -3171,14 +3194,12 @@ static float ComputeBaseFitScaleForVisual(const VisualState& vs, float winW, flo
     }
 
     float baseFit = std::min(winW / vs.VisualSize.width, winH / vs.VisualSize.height);
-    if (!GetPaneContext(PaneSlot::Primary).resource.isSvg) {
-        if (g_runtime.LockWindowSize) {
-            if (!g_config.UpscaleSmallImagesWhenLocked && baseFit > 1.0f) {
-                baseFit = 1.0f;
-            }
-        } else if (vs.VisualSize.width < 200.0f && vs.VisualSize.height < 200.0f && baseFit > 1.0f) {
+    if (g_runtime.LockWindowSize) {
+        if (!g_config.UpscaleSmallImagesWhenLocked && baseFit > 1.0f) {
             baseFit = 1.0f;
         }
+    } else if (vs.VisualSize.width < 200.0f && vs.VisualSize.height < 200.0f && baseFit > 1.0f) {
+        baseFit = 1.0f;
     }
 
     return baseFit;
@@ -3356,6 +3377,25 @@ static void PerformCompareZoomFit(HWND hwnd) {
     g_osd.ShowCompare(hwnd, leftBuf, rightBuf);
 }
 
+// Compute the Zoom value needed to make the image fill the current window.
+// Accounts for the baseFit cap on small images (<200px).
+// For large images: rawFit == cappedFit, returns 1.0 (no change).
+// For small images: rawFit > cappedFit, returns rawFit/cappedFit (image fills window).
+static float ComputeFitZoom(HWND hwnd) {
+    D2D1_SIZE_F effSize = GetVisualImageSize();
+    if (effSize.width <= 0 || effSize.height <= 0) return 1.0f;
+    RECT rc; GetClientRect(hwnd, &rc);
+    float fW = (float)rc.right;
+    float fH = (float)rc.bottom;
+    float galleryH = (g_gallery.IsPinned() && g_gallery.IsVisible()) ? g_gallery.GetVisualHeight(fH) : 0.0f;
+    float effH = fH - galleryH;
+    if (fW <= 0 || effH < 1.0f) return 1.0f;
+    float rawFit = std::min(fW / effSize.width, effH / effSize.height);
+    VisualState vs = GetVisualState();
+    float cappedFit = ComputeBaseFitScaleForVisual(vs, fW, effH);
+    return (cappedFit > 0.0001f) ? rawFit / cappedFit : 1.0f;
+}
+
 static void PerformZoom100(HWND hwnd, bool allowResizeWindow = true) {
     AppContext::GetInstance().ZoomAnimCtrl->Reset();
     if (GetPaneContext(PaneSlot::Primary).resource) {
@@ -3450,15 +3490,13 @@ static float GetCurrentTotalScale(HWND hwnd) {
     float scaleH = effWinH / imageHeight;
     float fitScale = (scaleW < scaleH) ? scaleW : scaleH;
 
-    if (!GetPaneContext(PaneSlot::Primary).resource.isSvg) {
-        if (g_runtime.LockWindowSize) {
-            if (!g_config.UpscaleSmallImagesWhenLocked && fitScale > 1.0f) {
-                fitScale = 1.0f;
-            }
-        } else {
-            if (imageWidth < 200.0f && imageHeight < 200.0f && fitScale > 1.0f) {
-                fitScale = 1.0f;
-            }
+    if (g_runtime.LockWindowSize) {
+        if (!g_config.UpscaleSmallImagesWhenLocked && fitScale > 1.0f) {
+            fitScale = 1.0f;
+        }
+    } else {
+        if (imageWidth < 200.0f && imageHeight < 200.0f && fitScale > 1.0f) {
+            fitScale = 1.0f;
         }
     }
 
@@ -3485,15 +3523,13 @@ static float ClampTotalScale(HWND hwnd, float newTotalScale) {
     float scaleH = effWinH / imageHeight;
     float fitScale = (scaleW < scaleH) ? scaleW : scaleH;
 
-    if (!GetPaneContext(PaneSlot::Primary).resource.isSvg) {
-        if (g_runtime.LockWindowSize) {
-            if (!g_config.UpscaleSmallImagesWhenLocked && fitScale > 1.0f) {
-                fitScale = 1.0f;
-            }
-        } else {
-            if (imageWidth < 200.0f && imageHeight < 200.0f && fitScale > 1.0f) {
-                fitScale = 1.0f;
-            }
+    if (g_runtime.LockWindowSize) {
+        if (!g_config.UpscaleSmallImagesWhenLocked && fitScale > 1.0f) {
+            fitScale = 1.0f;
+        }
+    } else {
+        if (imageWidth < 200.0f && imageHeight < 200.0f && fitScale > 1.0f) {
+            fitScale = 1.0f;
         }
     }
 
@@ -3625,7 +3661,7 @@ static float CalculateTargetZoom(HWND hwnd, float delta, bool isFineInterval = f
 static void ShowZoomOsd(HWND hwnd, float newTotalScale) {
     D2D1_SIZE_F visualSize = GetVisualImageSize();
     float osdScale = newTotalScale;
-    if (GetPaneContext(PaneSlot::Primary).metadata.Width > 0 && GetPaneContext(PaneSlot::Primary).metadata.Height > 0) {
+    if (!GetPaneContext(PaneSlot::Primary).resource.isSvg && GetPaneContext(PaneSlot::Primary).metadata.Width > 0 && GetPaneContext(PaneSlot::Primary).metadata.Height > 0) {
         VisualState vs = GetVisualState();
         float originalDim = (float)(vs.IsRotated90 ? GetPaneContext(PaneSlot::Primary).metadata.Height : GetPaneContext(PaneSlot::Primary).metadata.Width);
         if (originalDim > 0) {
@@ -3647,7 +3683,7 @@ static void PerformZoomFit(HWND hwnd, float maxScreenPct = 1.0f, bool allowResiz
     AppContext::GetInstance().ZoomAnimCtrl->Reset();
     if (GetPaneContext(PaneSlot::Primary).resource) {
         if (!allowResizeWindow) {
-            GetPaneContext(PaneSlot::Primary).view.Zoom = 1.0f;
+            GetPaneContext(PaneSlot::Primary).view.Zoom = ComputeFitZoom(hwnd);
             GetPaneContext(PaneSlot::Primary).view.PanX = 0;
             GetPaneContext(PaneSlot::Primary).view.PanY = 0;
             g_osd.Show(hwnd, AppStrings::OSD_ZoomFitWindow, false, false, D2D1::ColorF(D2D1::ColorF::White));
@@ -3659,7 +3695,7 @@ static void PerformZoomFit(HWND hwnd, float maxScreenPct = 1.0f, bool allowResiz
 
         // [Requirement] If maximized or fullscreen, just reset zoom/pan without resizing window
         if (IsZoomed(hwnd) || g_isFullScreen) {
-            GetPaneContext(PaneSlot::Primary).view.Zoom = 1.0f;
+            GetPaneContext(PaneSlot::Primary).view.Zoom = ComputeFitZoom(hwnd);
             GetPaneContext(PaneSlot::Primary).view.PanX = 0;
             GetPaneContext(PaneSlot::Primary).view.PanY = 0;
             g_osd.Show(hwnd, AppStrings::OSD_ZoomFit, false, false, D2D1::ColorF(D2D1::ColorF::White));
@@ -3710,7 +3746,7 @@ static void PerformZoomFit(HWND hwnd, float maxScreenPct = 1.0f, bool allowResiz
              SetWindowPos(hwnd, nullptr, x, y, targetWinW, targetWinH, SWP_NOZORDER | SWP_NOACTIVATE);
         }
         
-        GetPaneContext(PaneSlot::Primary).view.Zoom = 1.0f; 
+        GetPaneContext(PaneSlot::Primary).view.Zoom = ComputeFitZoom(hwnd); 
         g_osd.Show(hwnd, AppStrings::OSD_ZoomFit, false, false, D2D1::ColorF(D2D1::ColorF::White));
         RequestRepaint(PaintLayer::All);
         GetPaneContext(PaneSlot::Primary).view.IsInteracting = true;
@@ -4924,15 +4960,13 @@ int GetCurrentZoomPercent() {
     
     // Calculate BaseFit (same as WM_MOUSEWHEEL and SyncDCompState)
     float fitScale = std::min(winW / effSize.width, winH / effSize.height);
-    if (!GetPaneContext(PaneSlot::Primary).resource.isSvg) {
-        if (g_runtime.LockWindowSize) {
-            if (!g_config.UpscaleSmallImagesWhenLocked && fitScale > 1.0f) {
-                fitScale = 1.0f;
-            }
-        } else {
-            if (effSize.width < 200.0f && effSize.height < 200.0f && fitScale > 1.0f) {
-                fitScale = 1.0f;
-            }
+    if (g_runtime.LockWindowSize) {
+        if (!g_config.UpscaleSmallImagesWhenLocked && fitScale > 1.0f) {
+            fitScale = 1.0f;
+        }
+    } else {
+        if (effSize.width < 200.0f && effSize.height < 200.0f && fitScale > 1.0f) {
+            fitScale = 1.0f;
         }
     }
     
@@ -4942,7 +4976,7 @@ int GetCurrentZoomPercent() {
     // Convert to "True Scale" relative to Original Resolution
     VisualState vs = GetVisualState();
     float originalDim = (float)(vs.IsRotated90 ? GetPaneContext(PaneSlot::Primary).metadata.Height : GetPaneContext(PaneSlot::Primary).metadata.Width);
-    if (originalDim > 0) {
+    if (!GetPaneContext(PaneSlot::Primary).resource.isSvg && originalDim > 0) {
         totalScale = totalScale * (effSize.width / originalDim);
     }
     
@@ -4977,7 +5011,7 @@ void AdjustWindowForOverlay(HWND hwnd, bool isClosed) {
     float curBaseFit = 1.0f;
     if (hasImage) {
         curBaseFit = std::min(curClientW / imgW, curClientH / imgH);
-        if (imgW < 200.0f && imgH < 200.0f && !GetPaneContext(PaneSlot::Primary).resource.isSvg) {
+        if (imgW < 200.0f && imgH < 200.0f) {
             if (curBaseFit > 1.0f) curBaseFit = 1.0f;
         }
         absoluteZoom = GetPaneContext(PaneSlot::Primary).view.Zoom * curBaseFit;
@@ -5051,7 +5085,7 @@ void AdjustWindowForOverlay(HWND hwnd, bool isClosed) {
 
         if (!isClosed) {
             float newBaseFit = std::min(finalClientW / imgW, finalClientH / imgH);
-            if (imgW < 200.0f && imgH < 200.0f && !GetPaneContext(PaneSlot::Primary).resource.isSvg) {
+            if (imgW < 200.0f && imgH < 200.0f) {
                 if (newBaseFit > 1.0f) newBaseFit = 1.0f;
             }
 
@@ -6864,7 +6898,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 float winW = (float)rc.right;
                 float winH = (float)rc.bottom;
                 float baseFit = std::min(winW / vs.VisualSize.width, winH / vs.VisualSize.height);
-                if (vs.VisualSize.width < 200.0f && vs.VisualSize.height < 200.0f && !GetPaneContext(PaneSlot::Primary).resource.isSvg) {
+                if (vs.VisualSize.width < 200.0f && vs.VisualSize.height < 200.0f) {
                     if (baseFit > 1.0f) baseFit = 1.0f;
                 }
 
@@ -13573,8 +13607,7 @@ void PerformSmartZoom(HWND hwnd, float newTotalScale, const POINT* centerPt, boo
          float effFinalWinH = (float)finalWinH - galleryH;
          if (effFinalWinH < 1.0f) effFinalWinH = 1.0f;
          float baseFit_next = std::min((float)finalWinW / imgW, effFinalWinH / imgH);
-         // [SVG Lossless] Vector images shouldn't be capped.
-         if (imgW < 200.0f && imgH < 200.0f && !GetPaneContext(PaneSlot::Primary).resource.isSvg) {
+         if (imgW < 200.0f && imgH < 200.0f) {
              if (baseFit_next > 1.0f) baseFit_next = 1.0f;
          }
          
@@ -13641,16 +13674,13 @@ void PerformSmartZoom(HWND hwnd, float newTotalScale, const POINT* centerPt, boo
          if (effWinH < 1.0f) effWinH = 1.0f;
          
          float fitScale = std::min(winW / imgW, effWinH / imgH);
-         // [SVG Lossless] Don't cap fitScale for SVG - vector content scales losslessly
-         if (!GetPaneContext(PaneSlot::Primary).resource.isSvg) {
-             if (g_runtime.LockWindowSize) {
-                 if (!g_config.UpscaleSmallImagesWhenLocked && fitScale > 1.0f) {
-                     fitScale = 1.0f;
-                 }
-             } else {
-                 if (imgW < 200.0f && imgH < 200.0f && fitScale > 1.0f) {
-                     fitScale = 1.0f;
-                 }
+         if (g_runtime.LockWindowSize) {
+             if (!g_config.UpscaleSmallImagesWhenLocked && fitScale > 1.0f) {
+                 fitScale = 1.0f;
+             }
+         } else {
+             if (imgW < 200.0f && imgH < 200.0f && fitScale > 1.0f) {
+                 fitScale = 1.0f;
              }
          }
          
