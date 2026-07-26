@@ -4073,6 +4073,26 @@ void ApplyWindowTheme(HWND hwnd) {
     const BOOL useDarkFrame = useLightTheme ? FALSE : TRUE;
     DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkFrame, sizeof(useDarkFrame));
 
+#ifndef DWMWA_SYSTEMBACKDROP_TYPE
+#define DWMWA_SYSTEMBACKDROP_TYPE 38
+#define DWMSBT_DISABLE 1
+#define DWMSBT_MAINWINDOW 2
+#define DWMSBT_TRANSIENTWINDOW 3
+#define DWMSBT_TABBEDWINDOW 4
+#endif
+
+    // DWM_SYSTEMBACKDROP_TYPE: 2=Mica, 3=Acrylic (Transient), 4=Mica Alt (Tabbed)
+    if (g_config.CanvasColor == 4) {
+        int backdropType = DWMSBT_DISABLE;
+        if (g_config.CanvasEffectStyle == 0) backdropType = DWMSBT_MAINWINDOW;      // Mica
+        else if (g_config.CanvasEffectStyle == 1) backdropType = DWMSBT_TABBEDWINDOW; // Mica Alt
+        else if (g_config.CanvasEffectStyle == 2) backdropType = DWMSBT_TRANSIENTWINDOW; // Acrylic
+        DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdropType, sizeof(backdropType));
+    } else {
+        int backdropType = DWMSBT_DISABLE;
+        DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdropType, sizeof(backdropType));
+    }
+
 #ifndef DWMWA_BORDER_COLOR
 #define DWMWA_BORDER_COLOR 34
 #endif
@@ -4247,8 +4267,9 @@ void SaveConfig() {
     WriteConfigBool(L"GeekGlass", L"EnableAmbientDimmer", g_config.EnableAmbientDimmer, iniPath.c_str());
 
     // View
-    WriteConfigInt(L"View", L"ThemeMode", g_config.ThemeMode, iniPath.c_str());
+    WriteConfigInt(L"View", L"MenuBackdropStyle", g_config.MenuBackdropStyle, iniPath.c_str());
     WriteConfigInt(L"View", L"CanvasColor", g_config.CanvasColor, iniPath.c_str());
+    WriteConfigInt(L"View", L"CanvasEffectStyle", g_config.CanvasEffectStyle, iniPath.c_str());
     WriteConfigFloat(L"View", L"CanvasCustomR", g_config.CanvasCustomR, iniPath.c_str());
     WriteConfigFloat(L"View", L"CanvasCustomG", g_config.CanvasCustomG, iniPath.c_str());
     WriteConfigFloat(L"View", L"CanvasCustomB", g_config.CanvasCustomB, iniPath.c_str());
@@ -4513,8 +4534,18 @@ void LoadConfig() {
     g_config.GlassCustomTintG = (float)_wtof(bufGCTG);
     g_config.GlassCustomTintB = (float)_wtof(bufGCTB);
 
-    // View
-    g_config.CanvasColor = GetPrivateProfileIntW(L"View", L"CanvasColor", 0, iniPath.c_str());
+    g_config.MenuBackdropStyle = GetPrivateProfileIntW(L"View", L"MenuBackdropStyle", 0, iniPath.c_str());
+    g_config.CanvasColor = GetPrivateProfileIntW(L"View", L"CanvasColor", 2, iniPath.c_str());
+    g_config.CanvasEffectStyle = GetPrivateProfileIntW(L"View", L"CanvasEffectStyle", 0, iniPath.c_str());
+
+    // Legacy migration for 4, 5, 6 CanvasColor values
+    if (g_config.CanvasColor == 5) {
+        g_config.CanvasColor = 4;
+        g_config.CanvasEffectStyle = 1;
+    } else if (g_config.CanvasColor == 6) {
+        g_config.CanvasColor = 4;
+        g_config.CanvasEffectStyle = 2;
+    }
     wchar_t bufR[32], bufG[32], bufB[32];
     GetPrivateProfileStringW(L"View", L"CanvasCustomR", L"0.2", bufR, 32, iniPath.c_str());
     GetPrivateProfileStringW(L"View", L"CanvasCustomG", L"0.2", bufG, 32, iniPath.c_str());
@@ -5530,6 +5561,9 @@ static D2D1_COLOR_F ResolveCanvasColor() {
         case 1: return D2D1::ColorF(0.95f, 0.95f, 0.95f); // White
         case 2: return D2D1::ColorF(0.18f, 0.18f, 0.18f); // Grid
         case 3: return D2D1::ColorF(g_config.CanvasCustomR, g_config.CanvasCustomG, g_config.CanvasCustomB);
+        case 4: // Mica
+        case 5: // Mica Alt
+        case 6: return D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f); // Acrylic (Transparent)
         default: return D2D1::ColorF(0.18f, 0.18f, 0.18f);
     }
 }

@@ -1007,7 +1007,6 @@ void SettingsOverlay::BuildMenu() {
     itemUpdateChannel.pIntVal = &g_config.UpdateChannel;
     itemUpdateChannel.options = { AppStrings::Settings_Option_UpdateStable, AppStrings::Settings_Option_UpdatePreRelease };
     itemUpdateChannel.tooltipText = AppStrings::Settings_Tooltip_PreRelease;
-    itemUpdateChannel.isNewOption = true;
     tabGeneral.items.push_back(itemUpdateChannel);
     
     // Pro Habits
@@ -1281,6 +1280,17 @@ void SettingsOverlay::BuildMenu() {
     
     // --- Core Material Parameters ---
     tabTheme.items.push_back({ AppStrings::Settings_Header_CoreMaterial, OptionType::Header });
+
+    SettingsItem itemContextMenuBackdrop = { AppStrings::Settings_Label_ContextMenuBackdrop, OptionType::Segment, nullptr, nullptr, BindEnum(&g_config.MenuBackdropStyle), nullptr, 0, 0, {L"Acrylic", L"Mica", L"Mica Alt"} };
+    itemContextMenuBackdrop.isNewOption = true;
+    itemContextMenuBackdrop.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) {
+        if (g_config.MenuBackdropStyle != 0) { // 1=Mica, 2=Mica Alt
+            g_config.GlassMenusOpacity = 0.0f;
+        }
+        SaveConfig();
+        overlay->m_pendingRebuild = true;
+    };
+    tabTheme.items.push_back(itemContextMenuBackdrop);
     
     bool glassDisabled = !g_config.EnableGeekGlass;
     static float fZero = 0.0f;
@@ -1348,7 +1358,6 @@ void SettingsOverlay::BuildMenu() {
         SaveConfig();
         if (overlay->m_hwnd) InvalidateRect(overlay->m_hwnd, NULL, FALSE);
     };
-    itemStroke.isNewOption = true;
     tabTheme.items.push_back(itemStroke);
 
     // Glass Tint Profile (Base Color)
@@ -1407,6 +1416,11 @@ void SettingsOverlay::BuildMenu() {
     SettingsItem itemMenus = { AppStrings::Settings_Label_MenusDensity, OptionType::Slider, nullptr, &g_config.GlassMenusOpacity };
     itemMenus.minVal = 0.0f; itemMenus.maxVal = 100.0f; itemMenus.displayFormat = L"%.0f %%";
     itemMenus.tooltipText = AppStrings::Settings_Tooltip_MenusDensity;
+    if (g_config.MenuBackdropStyle != 0) { // 1=Mica, 2=Mica Alt
+        g_config.GlassMenusOpacity = 0.0f;
+        itemMenus.isDisabled = true;
+        itemMenus.pFloatVal = &fZero;
+    }
     itemMenus.onLiveUpdate = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) { overlay->AutoSwitchToCustom(false); };
     tabTheme.items.push_back(itemMenus);
 
@@ -1439,12 +1453,25 @@ void SettingsOverlay::BuildMenu() {
     tabVisuals.items.push_back({ AppStrings::Settings_Header_Backdrop, OptionType::Header });
     
     // Canvas Color Segment
-    SettingsItem itemColor = { AppStrings::Settings_Label_CanvasColor, OptionType::Segment, nullptr, nullptr, BindEnum(&g_config.CanvasColor), nullptr, 0, 0, {AppStrings::Settings_Option_Black, AppStrings::Settings_Option_White, AppStrings::Settings_Option_Grid, AppStrings::Settings_Option_Custom} };
-    itemColor.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) { overlay->m_pendingRebuild = true; }; // Rebuild to show/hide sliders
+    SettingsItem itemColor = { AppStrings::Settings_Label_CanvasColor, OptionType::Segment, nullptr, nullptr, BindEnum(&g_config.CanvasColor), nullptr, 0, 0, {AppStrings::Settings_Option_Black, AppStrings::Settings_Option_White, AppStrings::Settings_Option_Grid, AppStrings::Settings_Option_Custom, AppStrings::Settings_Option_Effects} };
+    itemColor.isNewOption = true;
+    itemColor.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) {
+        ApplyWindowTheme(overlay->m_hwnd);
+        overlay->m_pendingRebuild = true;
+    }; // Rebuild to show/hide sub-options
     tabVisuals.items.push_back(itemColor);
     
-    // Grid & Custom Color Row
-    if (g_config.CanvasColor == 3) {
+    if (g_config.CanvasColor == 4) {
+        // Effects mode: Show sub-segment for selecting effect (Mica, Mica Alt, Acrylic)
+        SettingsItem itemCanvasEffectStyle = { AppStrings::Settings_Label_CanvasEffectStyle, OptionType::Segment, nullptr, nullptr, BindEnum(&g_config.CanvasEffectStyle), nullptr, 0, 0, {L"Mica", L"Mica Alt", L"Acrylic"} };
+        itemCanvasEffectStyle.isNewOption = true;
+        itemCanvasEffectStyle.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) {
+            ApplyWindowTheme(overlay->m_hwnd);
+        };
+        tabVisuals.items.push_back(itemCanvasEffectStyle);
+        // ShowGrid toggle for overlaying grid on backdrop effects
+        tabVisuals.items.push_back({ AppStrings::Settings_Label_ShowGrid, OptionType::Toggle, &g_config.CanvasShowGrid });
+    } else if (g_config.CanvasColor == 3) {
         // Custom Mode: Show merged row
         SettingsItem itemRow = { AppStrings::Settings_Label_Overlay, OptionType::CustomColorRow };
         // We can use onChange as the Color Picker callback
@@ -1531,7 +1558,6 @@ void SettingsOverlay::BuildMenu() {
 
     SettingsItem itemBorderInd = { AppStrings::Settings_Label_ShowBorderIndicator, OptionType::Segment, nullptr, &g_config.BorderIndicatorCustomR, &g_config.ShowBorderIndicator, nullptr, 0, 0, {AppStrings::Settings_Option_Off, AppStrings::Settings_Option_On, AppStrings::Settings_Option_Custom} };
     itemBorderInd.tooltipText = AppStrings::Settings_Tooltip_ShowBorderIndicator;
-    itemBorderInd.isNewOption = true;
     itemBorderInd.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) {
         if (g_config.ShowBorderIndicator == 2) {
             HWND hwnd = GetActiveWindow();
@@ -1555,7 +1581,6 @@ void SettingsOverlay::BuildMenu() {
     tabVisuals.items.push_back(itemBorderInd);
 
     SettingsItem itemShowNavigator = { AppStrings::Settings_Label_ShowNavigator, OptionType::Segment, nullptr, nullptr, &g_config.ShowNavigator, nullptr, 0, 0, {AppStrings::Settings_Option_NavigatorAuto, AppStrings::Settings_Option_NavigatorOn, AppStrings::Settings_Option_NavigatorOff} };
-    itemShowNavigator.isNewOption = true;
     tabVisuals.items.push_back(itemShowNavigator);
 
     // Open FullScreen Mode & FullScreen Zoom Mode (Moved to Window Category Bottom)
@@ -1636,7 +1661,6 @@ void SettingsOverlay::BuildMenu() {
     
     // Custom Lite Info Panel Section (Group Header + Cloud Lists + Presets)
     SettingsItem headerCustomLite = { AppStrings::Settings_Label_CustomLiteInfoPanel, OptionType::Header };
-    headerCustomLite.isNewOption = true;
     tabVisuals.items.push_back(headerCustomLite);
     
     SettingsItem tagCloudNormal;
@@ -1645,7 +1669,6 @@ void SettingsOverlay::BuildMenu() {
     tagCloudNormal.pStrVal = &g_config.InfoPanelLiteItemsNormal;
     tagCloudNormal.options = { L"Zoom", L"Progress", L"File", L"Size", L"Disk", L"Format", L"Camera", L"Exp", L"Lens", L"Focal", L"Date", L"Flash", L"GPS", L"Profile" };
     tagCloudNormal.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) { SaveConfig(); };
-    tagCloudNormal.isNewOption = true;
     tabVisuals.items.push_back(tagCloudNormal);
 
     SettingsItem tagCloudCompare;
@@ -1654,7 +1677,6 @@ void SettingsOverlay::BuildMenu() {
     tagCloudCompare.pStrVal = &g_config.InfoPanelLiteItemsCompare;
     tagCloudCompare.options = { L"File", L"Size", L"Disk", L"Sharp", L"Ent", L"BPP", L"Date", L"Progress", L"Zoom", L"Format", L"Camera", L"Exp", L"Lens", L"Focal", L"Flash", L"GPS", L"Profile" };
     tagCloudCompare.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) { SaveConfig(); };
-    tagCloudCompare.isNewOption = true;
     tabVisuals.items.push_back(tagCloudCompare);
 
     SettingsItem separatorPreset;
@@ -1706,7 +1728,6 @@ void SettingsOverlay::BuildMenu() {
     tabVisuals.items.push_back(itemShowDirtyRect);
 
     SettingsItem itemLoupeShape = { AppStrings::Settings_Label_LoupeShape, OptionType::Segment, nullptr, nullptr, &g_config.LoupeShape, nullptr, 0, 0, { AppStrings::Settings_Option_LoupeShapeSquare, AppStrings::Settings_Option_LoupeShapeCircle } };
-    itemLoupeShape.isNewOption = true;
     itemLoupeShape.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) { SaveConfig(); };
     tabVisuals.items.push_back(itemLoupeShape);
 
@@ -1731,7 +1752,6 @@ void SettingsOverlay::BuildMenu() {
     SettingsItem itemUseFixedZoom = { AppStrings::Settings_Label_UseFixedZoom, OptionType::Toggle, &g_config.UseFixedZoom };
     itemUseFixedZoom.tooltipText = AppStrings::Settings_Tooltip_UseFixedZoom;
     itemUseFixedZoom.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) { SaveConfig(); };
-    itemUseFixedZoom.isNewOption = true;
     tabControl.items.push_back(itemUseFixedZoom);
     
     // Fixed Zoom Levels Input
@@ -1797,12 +1817,10 @@ void SettingsOverlay::BuildMenu() {
     tabControl.items.push_back({ AppStrings::Settings_Header_KeyboardPan, OptionType::Header });
     
     SettingsItem itemPanNormal = { AppStrings::Settings_Label_PanStepNormal, OptionType::Slider, nullptr, &g_config.PanStepNormal, nullptr, nullptr, 1.0f, 100.0f, {}, L"%.0f px" };
-    itemPanNormal.isNewOption = true;
     tabControl.items.push_back(itemPanNormal);
 
     SettingsItem itemPanFast = { AppStrings::Settings_Label_PanStepFast, OptionType::Slider, nullptr, &g_config.PanStepFast, nullptr, nullptr, 10.0f, 500.0f, {}, L"%.0f px" };
     itemPanFast.step = 1.0f;
-    itemPanFast.isNewOption = true;
     tabControl.items.push_back(itemPanFast);
 
     tabControl.items.push_back({ AppStrings::Settings_Header_Edge, OptionType::Header });
@@ -1891,25 +1909,6 @@ void SettingsOverlay::BuildMenu() {
         if (action == HotkeyAction::Loupe) {
             item.tooltipText = AppStrings::Settings_Tooltip_LoupeHotkey;
         }
-        
-        // Add NEW badge for specified hotkey actions
-        if (action == HotkeyAction::ZoomFitWindow ||
-            action == HotkeyAction::ZoomFill ||
-            action == HotkeyAction::Loupe ||
-            action == HotkeyAction::RenderRaw ||
-            action == HotkeyAction::ToggleCompare ||
-            action == HotkeyAction::ComparePair ||
-            action == HotkeyAction::PanUp ||
-            action == HotkeyAction::PanDown ||
-            action == HotkeyAction::PanLeft ||
-            action == HotkeyAction::PanRight ||
-            action == HotkeyAction::PanUpFast ||
-            action == HotkeyAction::PanDownFast ||
-            action == HotkeyAction::PanLeftFast ||
-            action == HotkeyAction::PanRightFast) {
-            item.isNewOption = true;
-        }
- 
         // Apply pending conflict status if any
         if (m_lastConflictAction == action && GetTickCount() - m_lastConflictTime < 3000) {
             item.statusText = m_lastConflictMsg;
@@ -1926,7 +1925,6 @@ void SettingsOverlay::BuildMenu() {
             undoItem.label = undoName;
             undoItem.type = OptionType::HotkeyBindRow;
             undoItem.hotkeyAction = HotkeyAction::Undo;
-            undoItem.isNewOption = true;
             
             if (m_lastConflictAction == HotkeyAction::Undo && GetTickCount() - m_lastConflictTime < 3000) {
                 undoItem.statusText = m_lastConflictMsg;
@@ -1984,7 +1982,6 @@ void SettingsOverlay::BuildMenu() {
         SaveConfig();
         ApplyPairRawJpegSetting(g_mainHwnd);
     };
-    itemPairRaw.isNewOption = true;
     tabImage.items.push_back(itemPairRaw);
 
     // --- 2. Color Management (CMS) Group ---
@@ -2259,7 +2256,6 @@ void SettingsOverlay::BuildMenu() {
     
     tabImage.items.push_back({ AppStrings::Settings_Header_Prompts, OptionType::Header });
     SettingsItem itemConfirmDel = { AppStrings::Settings_Label_ConfirmDel, OptionType::Toggle, &g_config.ConfirmDelete };
-    itemConfirmDel.isNewOption = true;
     tabImage.items.push_back(itemConfirmDel);
     tabImage.items.push_back({ AppStrings::Checkbox_AlwaysSaveLossless, OptionType::Toggle, &g_config.AlwaysSaveLossless });
     tabImage.items.push_back({ AppStrings::Checkbox_AlwaysSaveEdgeAdapted, OptionType::Toggle, &g_config.AlwaysSaveEdgeAdapted });

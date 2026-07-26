@@ -1,14 +1,13 @@
 #pragma once
 // ============================================================
-// GeekContextMenu.h - Win11-style D2D Rendered Context Menu
+// GeekContextMenu.h - Win11-style D2D + DComp Context Menu
 // ============================================================
 // Architecture:
-//   - WS_POPUP window with DWM ACCENT_ENABLE_ACRYLICBLURBEHIND
-//   - ID2D1HwndRenderTarget for all rendering
-//   - Rendered using system icon fonts (Segoe Fluent/MDL2)
-//   - Elastic scale entry animation
+//   - WS_POPUP + WS_EX_NOREDIRECTIONBITMAP (required for DWM system backdrop)
+//   - DirectComposition surface for premultiplied content over Mica/Acrylic
+//   - DWMWA_SYSTEMBACKDROP_TYPE on Win11; SWCA acrylic fallback on Win10
+//   - SW_SHOWNOACTIVATE + SetCapture focus chain (never steals app activation)
 //   - Cascading submenu via child popup windows
-//   - Focus chain management via SetCapture + WM_ACTIVATE
 // ============================================================
 
 #include "pch.h"
@@ -17,6 +16,7 @@
 #include <d2d1_1.h>
 #include <dwrite.h>
 #include <dwmapi.h>
+#include <dcomp.h>
 #include <wrl/client.h>
 #include <vector>
 #include <string>
@@ -25,6 +25,7 @@
 #include <functional>
 
 #pragma comment(lib, "dwmapi.lib")
+#pragma comment(lib, "dcomp.lib")
 
 namespace QuickView::UI::Menu {
 
@@ -116,10 +117,12 @@ private:
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMsg(HWND, UINT, WPARAM, LPARAM);
 
-    // DWM Acrylic
-    bool ApplyAcrylic();
+    // DWM backdrop (Mica / Mica Alt / Acrylic)
+    bool ApplyBackdrop();
+    void ApplyWindowChrome();
+    static int ResolveSystemBackdropType();
 
-    // D2D Resources
+    // D2D / DComp Resources
     void CreateResources();
     void DiscardResources();
 
@@ -129,18 +132,17 @@ private:
 
     // Rendering
     void Paint();
-    void RenderGlassOverlay();
-    void RenderCapsule();        // Top action row capsule background
+    void RenderCapsule();
     void RenderActionRow();
     void RenderItems();
     void RenderItem(const GeekMenuItem& item, int index);
     void RenderSeparator(float y);
     void RenderScrollIndicators();
     void RenderBevel();
-    void RenderAndUI();          // The new unified render + UpdateLayeredWindow path
-    void ApplyWindowRegion();    // DWM rounded window region
+    void RenderAndUI();
+    void ApplyWindowRegion();
 
-    // Hit Testing (coordinates are local to this menu window)
+    // Hit Testing (coordinates are local to this menu window, in DIPs)
     int HitTestAction(float lx, float ly) const;
     int HitTestItem(float lx, float ly) const;
 
@@ -156,6 +158,8 @@ private:
     bool IsChainWindow(HWND hwnd) const;
     bool IsPointInChain(POINT screenPt) const;
     GeekContextMenu* GetRoot();
+    bool ShouldSuppressDismiss() const;
+    void ArmDismissGrace();
 
     // Animation
     void StartAnimation();
@@ -167,11 +171,14 @@ private:
 
     // Window
     HWND m_hwnd = nullptr;
-    HWND m_parentAppHwnd = nullptr;   // The original app window for WM_COMMAND
+    HWND m_parentAppHwnd = nullptr;
 
-    // D2D
-    ComPtr<ID2D1Factory1> m_factory;
-    ComPtr<ID2D1DCRenderTarget> m_rt;
+    // D2D & DComp (private DComp device — never Commit() the main window device)
+    ComPtr<IDCompositionDesktopDevice> m_dcompDevice;
+    ComPtr<ID2D1DeviceContext> m_d2dContext;
+    ComPtr<IDCompositionTarget> m_dcompTarget;
+    ComPtr<IDCompositionVisual2> m_dcompVisual;
+    ComPtr<IDCompositionSurface> m_dcompSurface;
     ComPtr<IDWriteFactory> m_dwFactory;
     ComPtr<IDWriteTextFormat> m_itemFont;
     ComPtr<IDWriteTextFormat> m_shortcutFont;
@@ -196,28 +203,31 @@ private:
     int m_hoverAction = -1;
     int m_hoverItem = -1;
     int m_submenuIdx = -1;
-    bool m_hasAcrylic = false;
+    bool m_hasBackdrop = false;
     bool m_isLight = false;
     bool m_isTouch = false;
-    float m_scale = 1.0f;   // DPI scale
+    float m_scale = 1.0f;
 
     // Animation
     float m_animT = 0.0f;
     std::chrono::steady_clock::time_point m_animStart;
     bool m_animating = false;
-    POINT m_originPt = {};   // Screen position for scale origin
+    POINT m_originPt = {};
     int m_targetX = 0;
     int m_targetY = 0;
+
+    // Dismiss grace: ignore activate/capture churn for the first frames after open
+    std::chrono::steady_clock::time_point m_suppressDismissUntil{};
 
     // Menu chain
     GeekContextMenu* m_parentMenu = nullptr;
     std::unique_ptr<GeekContextMenu> m_childMenu;
     QuickView::UI::GeekGlass::GeekGlassEngine m_glassEngine;
 
-    // Layout metrics (in DPI-scaled pixels)
+    // Layout metrics (in DIPs)
     float m_menuW = 0;
     float m_actionRowH = 0;
-    float m_bodyStartY = 0;  // Y offset where body items begin
+    float m_bodyStartY = 0;
     float m_scrollOffset = 0.0f;
     float m_maxBodyH = 0.0f;
     float m_totalBodyH = 0.0f;
@@ -228,7 +238,7 @@ private:
     static bool s_classRegistered;
     static constexpr wchar_t CLASS_NAME[] = L"QuickView_GeekMenu";
 
-    // Layout constants (logical px, multiplied by m_scale at runtime)
+    // Layout constants (logical px / DIPs, multiplied by m_scale at runtime for HWND size)
     static constexpr float MENU_WIDTH   = 280.0f;
     static constexpr float ACTION_H     = 72.0f;
     static constexpr float ITEM_H       = 36.0f;
@@ -236,7 +246,7 @@ private:
     static constexpr float ICON_SIZE    = 16.0f;
     static constexpr float ACTION_ICON  = 22.0f;
     static constexpr float CORNER_R     = 8.0f;
-    static constexpr float MENU_PAD     = 6.0f;   // Outer padding (between border and content)
+    static constexpr float MENU_PAD     = 6.0f;
     static constexpr float ICON_LEFT    = 14.0f;
     static constexpr float TEXT_LEFT    = 44.0f;
     static constexpr float TEXT_RIGHT   = 16.0f;
@@ -245,6 +255,7 @@ private:
     static constexpr UINT_PTR TIMER_HOVER = 2;
     static constexpr UINT_PTR TIMER_FOCUS = 3;
     static constexpr float ANIM_MS = 120.0f;
+    static constexpr int DISMISS_GRACE_MS = 200;
 };
 
 } // namespace QuickView::UI::Menu

@@ -424,6 +424,9 @@ const wchar_t *Settings_Link_Hotkeys = nullptr;
 const wchar_t *Settings_Label_Version = nullptr;
 const wchar_t *Settings_Label_Build = nullptr;
 const wchar_t *Settings_Option_Black = nullptr;
+const wchar_t *Settings_Option_Effects = nullptr;
+const wchar_t *Settings_Label_ContextMenuBackdrop = nullptr;
+const wchar_t *Settings_Label_CanvasEffectStyle = nullptr;
 const wchar_t *Settings_Option_White = nullptr;
 const wchar_t *Settings_Option_Grid = nullptr;
 const wchar_t *Settings_Option_Custom = nullptr;
@@ -948,6 +951,9 @@ struct LanguageTable {
     const wchar_t *Settings_Label_Version;
     const wchar_t *Settings_Label_Build;
     const wchar_t *Settings_Option_Black;
+    const wchar_t *Settings_Option_Effects;
+    const wchar_t *Settings_Label_ContextMenuBackdrop;
+    const wchar_t *Settings_Label_CanvasEffectStyle;
     const wchar_t *Settings_Option_White;
     const wchar_t *Settings_Option_Grid;
     const wchar_t *Settings_Option_Custom;
@@ -1332,7 +1338,7 @@ static const LanguageTable Table_EN = {
     L"Dialogs & Settings", // Settings_Label_ModalsDensity
     L"Transparency for centered popups.", // Settings_Tooltip_ModalsDensity
     L"Menus", // Settings_Label_MenusDensity
-    L"Transparency for right-click context menus.", // Settings_Tooltip_MenusDensity
+    L"Control context menu material density (Only adjustable when using Acrylic backdrop).", // Settings_Tooltip_MenusDensity
     L"Theme", // Settings_Tab_Theme
     L"Preset", // Settings_Label_ThemeMode
     L"System", // Settings_Option_ThemeAuto
@@ -1475,6 +1481,9 @@ static const LanguageTable Table_EN = {
     L"Version", // Settings_Label_Version
     L"Build", // Settings_Label_Build
     L"Black", // Settings_Option_Black
+    L"Effects", // Settings_Option_Effects
+    L"Right-Click Menu", // Settings_Label_ContextMenuBackdrop
+    L"Effect Style", // Settings_Label_CanvasEffectStyle
     L"White", // Settings_Option_White
     L"Grid", // Settings_Option_Grid
     L"Custom", // Settings_Option_Custom
@@ -1859,7 +1868,7 @@ static const LanguageTable Table_CN = {
     L"模态窗口", // Settings_Label_ModalsDensity
     L"控制设置面板、帮助面板和对话框等弹出窗口的厚度。", // Settings_Tooltip_ModalsDensity
     L"右键菜单", // Settings_Label_MenusDensity
-    L"控制右键菜单、下拉列表的厚度。", // Settings_Tooltip_MenusDensity
+    L"控制右键菜单材质浓度（仅在 Acrylic 材质下可以调节）。", // Settings_Tooltip_MenusDensity
     L"主题", // Settings_Tab_Theme
     L"主题模式", // Settings_Label_ThemeMode
     L"自动", // Settings_Option_ThemeAuto
@@ -2002,6 +2011,9 @@ static const LanguageTable Table_CN = {
     L"版本", // Settings_Label_Version
     L"构建", // Settings_Label_Build
     L"黑色", // Settings_Option_Black
+    L"特效", // Settings_Option_Effects
+    L"右键菜单", // Settings_Label_ContextMenuBackdrop
+    L"特效类型", // Settings_Label_CanvasEffectStyle
     L"白色", // Settings_Option_White
     L"网格", // Settings_Option_Grid
     L"自定义", // Settings_Option_Custom
@@ -2386,7 +2398,7 @@ static const LanguageTable Table_TW = {
     L"模態視窗", // Settings_Label_ModalsDensity
     L"控制設定面板、幫助面板和對話方塊等彈出窗口的厚度。", // Settings_Tooltip_ModalsDensity
     L"右鍵選單", // Settings_Label_MenusDensity
-    L"控制右鍵選單、下拉列表的厚度。", // Settings_Tooltip_MenusDensity
+    L"控制右鍵菜單材質濃度（僅在 Acrylic 材質下可以調節）。", // Settings_Tooltip_MenusDensity
     L"主題", // Settings_Tab_Theme
     L"主題模式", // Settings_Label_ThemeMode
     L"自動", // Settings_Option_ThemeAuto
@@ -2529,6 +2541,9 @@ static const LanguageTable Table_TW = {
     L"版本", // Settings_Label_Version
     L"建置", // Settings_Label_Build
     L"黑色", // Settings_Option_Black
+    L"特效", // Settings_Option_Effects
+    L"右鍵菜單", // Settings_Label_ContextMenuBackdrop
+    L"特效類型", // Settings_Label_CanvasEffectStyle
     L"白色", // Settings_Option_White
     L"網格", // Settings_Option_Grid
     L"自訂", // Settings_Option_Custom
@@ -2913,7 +2928,7 @@ static const LanguageTable Table_JA = {
     L"ダイアログ & 設定", // Settings_Label_ModalsDensity
     L"中央ポップアップの透明度。", // Settings_Tooltip_ModalsDensity
     L"メニュー", // Settings_Label_MenusDensity
-    L"右クリックコンテキストメニューの透明度。", // Settings_Tooltip_MenusDensity
+    L"右クリックメニューの材質濃度（Acrylic 素材でのみ調整可能）。", // Settings_Tooltip_MenusDensity
     L"テーマ", // Settings_Tab_Theme
     L"プリセット", // Settings_Label_ThemeMode
     L"システム", // Settings_Option_ThemeAuto
@@ -3056,6 +3071,9 @@ static const LanguageTable Table_JA = {
     L"バージョン", // Settings_Label_Version
     L"ビルド", // Settings_Label_Build
     L"ブラック", // Settings_Option_Black
+    L"エフェクト", // Settings_Option_Effects
+    L"右クリックメニュー", // Settings_Label_ContextMenuBackdrop
+    L"エフェクトスタイル", // Settings_Label_CanvasEffectStyle
     L"ホワイト", // Settings_Option_White
     L"グリッド", // Settings_Option_Grid
     L"カスタム", // Settings_Option_Custom
@@ -3440,7 +3458,7 @@ static const LanguageTable Table_RU = {
     L"Окна и настройки", // Settings_Label_ModalsDensity
     L"Прозрачность центрированных всплывающих окон.", // Settings_Tooltip_ModalsDensity
     L"Меню", // Settings_Label_MenusDensity
-    L"Прозрачность контекстных меню, вызываемых правой кнопкой мыши.", // Settings_Tooltip_MenusDensity
+    L"Плотность материала контекстного меню (настраивается только для Acrylic).", // Settings_Tooltip_MenusDensity
     L"Тема", // Settings_Tab_Theme
     L"Пресет", // Settings_Label_ThemeMode
     L"Авто", // Settings_Option_ThemeAuto
@@ -3583,6 +3601,9 @@ static const LanguageTable Table_RU = {
     L"Версия", // Settings_Label_Version
     L"Сборка", // Settings_Label_Build
     L"Чёрный", // Settings_Option_Black
+    L"Эффекты", // Settings_Option_Effects
+    L"Контекстное меню", // Settings_Label_ContextMenuBackdrop
+    L"Стиль эффекта", // Settings_Label_CanvasEffectStyle
     L"Белый", // Settings_Option_White
     L"Сетка", // Settings_Option_Grid
     L"Свой", // Settings_Option_Custom
@@ -3967,7 +3988,7 @@ static const LanguageTable Table_DE = {
     L"Dialogs & Settings", // Settings_Label_ModalsDensity
     L"Transparency for centered popups.", // Settings_Tooltip_ModalsDensity
     L"Menus", // Settings_Label_MenusDensity
-    L"Transparency for right-click context menus.", // Settings_Tooltip_MenusDensity
+    L"Materialdichte für Kontextmenüs (Nur bei Acrylic-Material anpassbar).", // Settings_Tooltip_MenusDensity
     L"Theme", // Settings_Tab_Theme
     L"Preset", // Settings_Label_ThemeMode
     L"System", // Settings_Option_ThemeAuto
@@ -4110,6 +4131,9 @@ static const LanguageTable Table_DE = {
     L"Version", // Settings_Label_Version
     L"Build", // Settings_Label_Build
     L"Schwarz", // Settings_Option_Black
+    L"Effekte", // Settings_Option_Effects
+    L"Kontextmenü", // Settings_Label_ContextMenuBackdrop
+    L"Effekt-Stil", // Settings_Label_CanvasEffectStyle
     L"Weiß", // Settings_Option_White
     L"Raster", // Settings_Option_Grid
     L"Benutzerdefiniert", // Settings_Option_Custom
@@ -4494,7 +4518,7 @@ static const LanguageTable Table_ES = {
     L"Diálogos y configuración", // Settings_Label_ModalsDensity
     L"Transparencia para ventanas emergentes centradas.", // Settings_Tooltip_ModalsDensity
     L"Menús", // Settings_Label_MenusDensity
-    L"Transparencia para menús contextuales.", // Settings_Tooltip_MenusDensity
+    L"Densidad del menú contextual (Solo ajustable con material Acrylic).", // Settings_Tooltip_MenusDensity
     L"Tema", // Settings_Tab_Theme
     L"Ajuste", // Settings_Label_ThemeMode
     L"Sistema", // Settings_Option_ThemeAuto
@@ -4637,6 +4661,9 @@ static const LanguageTable Table_ES = {
     L"Versión", // Settings_Label_Version
     L"Compilación", // Settings_Label_Build
     L"Negro", // Settings_Option_Black
+    L"Efectos", // Settings_Option_Effects
+    L"Menú contextual", // Settings_Label_ContextMenuBackdrop
+    L"Estilo de efecto", // Settings_Label_CanvasEffectStyle
     L"Blanco", // Settings_Option_White
     L"Cuadrícula", // Settings_Option_Grid
     L"Personalizado", // Settings_Option_Custom
@@ -5021,7 +5048,7 @@ static const LanguageTable Table_FR = {
     L"Dialogs & Settings", // Settings_Label_ModalsDensity
     L"Transparency for centered popups.", // Settings_Tooltip_ModalsDensity
     L"Menus", // Settings_Label_MenusDensity
-    L"Transparency for right-click context menus.", // Settings_Tooltip_MenusDensity
+    L"Control context menu material density (Only adjustable when using Acrylic backdrop).", // Settings_Tooltip_MenusDensity
     L"Theme", // Settings_Tab_Theme
     L"Preset", // Settings_Label_ThemeMode
     L"System", // Settings_Option_ThemeAuto
@@ -5164,6 +5191,9 @@ static const LanguageTable Table_FR = {
     L"Version", // Settings_Label_Version
     L"Build", // Settings_Label_Build
     L"Black", // Settings_Option_Black
+    L"Effects", // Settings_Option_Effects
+    L"Right-Click Menu", // Settings_Label_ContextMenuBackdrop
+    L"Effect Style", // Settings_Label_CanvasEffectStyle
     L"White", // Settings_Option_White
     L"Grid", // Settings_Option_Grid
     L"Custom", // Settings_Option_Custom
@@ -5695,6 +5725,9 @@ void Apply(const LanguageTable& t) {
   Settings_Label_Version = t.Settings_Label_Version;
   Settings_Label_Build = t.Settings_Label_Build;
   Settings_Option_Black = t.Settings_Option_Black;
+  Settings_Option_Effects = t.Settings_Option_Effects;
+  Settings_Label_ContextMenuBackdrop = t.Settings_Label_ContextMenuBackdrop;
+  Settings_Label_CanvasEffectStyle = t.Settings_Label_CanvasEffectStyle;
   Settings_Option_White = t.Settings_Option_White;
   Settings_Option_Grid = t.Settings_Option_Grid;
   Settings_Option_Custom = t.Settings_Option_Custom;

@@ -517,6 +517,7 @@ struct AppConfig {
     float ThemeCustomTextR = 1.0f;      // Custom Text Color
     float ThemeCustomTextG = 1.0f;
     float ThemeCustomTextB = 1.0f;
+    int MenuBackdropStyle = 0;          // 0=Acrylic, 1=Mica, 2=Mica Alt
 
     // --- Geek Glass Pipeline ---
     bool GlassShowBorders = true;         // Global toggle for UI Borders
@@ -548,7 +549,8 @@ struct AppConfig {
     float GlassCustomTintG = 0.5f;
     float GlassCustomTintB = 0.5f;
 
-    int CanvasColor = 2;                // 0=Black, 1=White, 2=Grid, 3=Custom
+    int CanvasColor = 2;                // 0=Black, 1=White, 2=Grid, 3=Custom, 4=Effects
+    int CanvasEffectStyle = 0;          // 0=Mica, 1=Mica Alt, 2=Acrylic
     float CanvasCustomR = 0.2f;         // Custom color RGB (0.0-1.0)
     float CanvasCustomG = 0.2f;
     float CanvasCustomB = 0.2f;

@@ -142,6 +142,10 @@ public:
     HRESULT SetRootOpacity(float opacity);
     float GetRootOpacity() const { return m_rootOpacity; }
 
+    // [Accessors for external windows like GeekContextMenu]
+    IDCompositionDesktopDevice* GetDevice() const { return m_device.Get(); }
+    ID2D1Device* GetD2DDevice() const { return m_d2dDevice.Get(); }
+
 private:
     HRESULT CreateLayerSurface(UILayer layer, UINT width, UINT height);
     HRESULT CreateAllSurfaces(UINT width, UINT height);

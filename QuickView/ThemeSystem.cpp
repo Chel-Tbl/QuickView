@@ -39,7 +39,8 @@ namespace QuickView::UI::ThemeSystem {
         yyjson_mut_doc_set_root(doc, root);
 
         yyjson_mut_obj_add_real(doc, root, "version", 1.0);
-        yyjson_mut_obj_add_int(doc, root, "theme_mode", (int)config.ThemeMode);
+        yyjson_mut_obj_add_int(doc, root, "theme_mode", config.ThemeMode);
+        yyjson_mut_obj_add_int(doc, root, "menu_backdrop_style", config.MenuBackdropStyle);
         yyjson_mut_obj_add_bool(doc, root, "glass_enabled", config.EnableGeekGlass);
         yyjson_mut_obj_add_bool(doc, root, "animations", config.GlassUIAnimations);
         yyjson_mut_obj_add_real(doc, root, "blur", config.GlassBlurSigma);
@@ -68,6 +69,7 @@ namespace QuickView::UI::ThemeSystem {
         add_color("text_color", config.ThemeCustomTextR, config.ThemeCustomTextG, config.ThemeCustomTextB);
 
         yyjson_mut_obj_add_int(doc, root, "canvas_color", config.CanvasColor);
+        yyjson_mut_obj_add_int(doc, root, "canvas_effect_style", config.CanvasEffectStyle);
         add_color("canvas_custom", config.CanvasCustomR, config.CanvasCustomG, config.CanvasCustomB);
 
         size_t len;
@@ -140,6 +142,7 @@ namespace QuickView::UI::ThemeSystem {
         };
 
         get_int("theme_mode", config.ThemeMode);
+        get_int("menu_backdrop_style", config.MenuBackdropStyle);
         get_bool("glass_enabled", config.EnableGeekGlass);
         get_bool("animations", config.GlassUIAnimations);
         get_double("blur", config.GlassBlurSigma);
@@ -160,6 +163,7 @@ namespace QuickView::UI::ThemeSystem {
         get_color("text_color", config.ThemeCustomTextR, config.ThemeCustomTextG, config.ThemeCustomTextB);
 
         get_int("canvas_color", config.CanvasColor);
+        get_int("canvas_effect_style", config.CanvasEffectStyle);
         get_color("canvas_custom", config.CanvasCustomR, config.CanvasCustomG, config.CanvasCustomB);
 
         config.EnforceGlassSafetyLimits();

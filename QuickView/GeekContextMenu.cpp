@@ -1,35 +1,75 @@
 #include "pch.h"
 #include "GeekContextMenu.h"
+#include "RenderEngine.h"
 #include "EditState.h"
 #include "SystemInfo.h"
+#include "GeekGlass.h"
+#include "CompositionEngine.h"
 #include "GeekIconRenderer.h"
 #include <d2d1_1.h>
 #include <cmath>
 
+extern class CRenderEngine* g_pRenderEngine;
+
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
 
-    extern AppConfig g_config;
+extern AppConfig g_config;
+extern CompositionEngine* g_compEngine;
+
+// Official DWM system-backdrop constants (Win11 22H2+). Defined here so we do not
+// depend on a particular SDK shipping the enum under a given name.
+#ifndef DWMWA_SYSTEMBACKDROP_TYPE
+#define DWMWA_SYSTEMBACKDROP_TYPE 38
+#endif
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#define DWMWCP_DEFAULT 0
+#define DWMWCP_DONOTROUND 1
+#define DWMWCP_ROUND 2
+#define DWMWCP_ROUNDSMALL 3
+#endif
+
+// DWM_SYSTEMBACKDROP_TYPE values (dwmapi.h):
+//   0 AUTO, 1 NONE, 2 MAINWINDOW=Mica, 3 TRANSIENTWINDOW=Acrylic, 4 TABBEDWINDOW=Mica Alt
+#ifndef DWMSBT_AUTO
+#define DWMSBT_AUTO 0
+#define DWMSBT_NONE 1
+#define DWMSBT_MAINWINDOW 2
+#define DWMSBT_TRANSIENTWINDOW 3
+#define DWMSBT_TABBEDWINDOW 4
+#endif
 
 namespace QuickView::UI::Menu {
 
 // ============================================================
-// DWM Undocumented Acrylic API
+// DWM Undocumented Acrylic API (Win10 / fallback)
 // ============================================================
-enum ACCENT_STATE { ACCENT_DISABLED = 0, ACCENT_ENABLE_BLURBEHIND = 3, ACCENT_ENABLE_ACRYLICBLURBEHIND = 4 };
-struct ACCENT_POLICY { int nAccentState; int nFlags; DWORD nColor; int nAnimationId; };
-struct WINCOMPATTRDATA { int nAttribute; PVOID pvData; SIZE_T cbData; };
+enum ACCENT_STATE {
+    ACCENT_DISABLED = 0,
+    ACCENT_ENABLE_BLURBEHIND = 3,
+    ACCENT_ENABLE_ACRYLICBLURBEHIND = 4
+};
+struct ACCENT_POLICY {
+    int nAccentState;
+    int nFlags;
+    DWORD nColor;
+    int nAnimationId;
+};
+struct WINCOMPATTRDATA {
+    int nAttribute;
+    PVOID pvData;
+    SIZE_T cbData;
+};
 using SetWindowCompositionAttributeFn = BOOL(WINAPI*)(HWND, WINCOMPATTRDATA*);
 static SetWindowCompositionAttributeFn GetSWCA() {
     static auto fn = reinterpret_cast<SetWindowCompositionAttributeFn>(
         GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetWindowCompositionAttribute"));
     return fn;
 }
-
-// ============================================================
-// Constants
-// ============================================================
-// static constexpr float PI = 3.14159265f;
 
 // ============================================================
 // Static Members
@@ -42,7 +82,12 @@ bool GeekContextMenu::s_classRegistered = false;
 // ============================================================
 GeekContextMenu::~GeekContextMenu() {
     CloseSubmenu();
-    if (m_hwnd) { DestroyWindow(m_hwnd); m_hwnd = nullptr; }
+    if (m_hwnd) {
+        KillTimer(m_hwnd, TIMER_ANIM);
+        KillTimer(m_hwnd, TIMER_FOCUS);
+        DestroyWindow(m_hwnd);
+        m_hwnd = nullptr;
+    }
     DiscardResources();
 }
 
@@ -53,7 +98,7 @@ void GeekContextMenu::EnsureClassRegistered() {
     if (s_classRegistered) return;
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
-    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.style = CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW;
     wc.lpfnWndProc = WndProc;
     wc.hInstance = GetModuleHandle(nullptr);
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
@@ -61,6 +106,20 @@ void GeekContextMenu::EnsureClassRegistered() {
     wc.lpszClassName = CLASS_NAME;
     RegisterClassExW(&wc);
     s_classRegistered = true;
+}
+
+// ============================================================
+// Backdrop type resolution
+// MenuBackdropStyle: 0=Acrylic, 1=Mica, 2=Mica Alt  (matches Settings UI)
+// ============================================================
+int GeekContextMenu::ResolveSystemBackdropType() {
+    if (!g_config.EnableGeekGlass) return DWMSBT_NONE;
+    switch (g_config.MenuBackdropStyle) {
+    case 1:  return DWMSBT_MAINWINDOW;      // Mica
+    case 2:  return DWMSBT_TABBEDWINDOW;    // Mica Alt
+    case 0:
+    default: return DWMSBT_TRANSIENTWINDOW; // Acrylic — preferred for transient flyouts
+    }
 }
 
 // ============================================================
@@ -83,13 +142,13 @@ void GeekContextMenu::ShowMenu(HWND parent, int sx, int sy,
     menu->m_isTouch = isTouch;
     menu->m_originPt = { sx, sy };
 
-    // DPI
+    // DPI of the monitor under the cursor
     HMONITOR hMon = MonitorFromPoint({ sx, sy }, MONITOR_DEFAULTTONEAREST);
     UINT dpiX = 96, dpiY = 96;
     using GetDpiForMonitorFn = HRESULT(WINAPI*)(HMONITOR, int, UINT*, UINT*);
     static auto pGetDpi = reinterpret_cast<GetDpiForMonitorFn>(
         GetProcAddress(GetModuleHandleW(L"shcore.dll"), "GetDpiForMonitor"));
-    if (pGetDpi) pGetDpi(hMon, 0, &dpiX, &dpiY);
+    if (pGetDpi) pGetDpi(hMon, 0 /* MDT_EFFECTIVE_DPI */, &dpiX, &dpiY);
     menu->m_scale = dpiX / 96.0f;
 
     menu->CalculateLayout();
@@ -107,33 +166,44 @@ void GeekContextMenu::ShowMenu(HWND parent, int sx, int sy,
     menu->m_targetX = x;
     menu->m_targetY = y;
 
-    // Start slightly lower for a slide-up animation
+    // Owned popup: parent as owner keeps z-order above the app without stealing
+    // taskbar identity. WS_EX_NOREDIRECTIONBITMAP is mandatory for DComp + system backdrop.
+    // Start 10px below target for the slide-up entrance animation.
+    const int startY = g_config.GlassUIAnimations ? (y + 10) : y;
     menu->m_hwnd = CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED,
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP,
         CLASS_NAME, nullptr, WS_POPUP,
-        x, y + 10, winSize.cx, winSize.cy,
-        nullptr, nullptr, GetModuleHandle(nullptr), menu.get());
+        x, startY, winSize.cx, winSize.cy,
+        parent, nullptr, GetModuleHandle(nullptr), menu.get());
 
     if (!menu->m_hwnd) return;
     SetWindowLongPtrW(menu->m_hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(menu.get()));
 
-    menu->m_hasAcrylic = menu->ApplyAcrylic();
-    bool shadowsEnabled = (QuickView::UI::GeekGlass::GetGlobalThemeConfig().shadowOpacity > 0.005f);
-    if (shadowsEnabled) {
-        MARGINS margins = { -1, -1, -1, -1 };
-        DwmExtendFrameIntoClientArea(menu->m_hwnd, &margins);
-    } else {
-        DWORD policy = DWMNCRP_DISABLED;
-        DwmSetWindowAttribute(menu->m_hwnd, DWMWA_NCRENDERING_POLICY, &policy, sizeof(policy));
+    menu->CreateResources();
+    if (!menu->m_dcompSurface || !menu->m_d2dContext) {
+        // Resource creation failed — abort cleanly rather than show a blank shell.
+        DestroyWindow(menu->m_hwnd);
+        menu->m_hwnd = nullptr;
+        return;
     }
+
+    menu->ApplyWindowChrome();
     menu->ApplyWindowRegion();
 
-    menu->CreateResources();
-    menu->StartAnimation();
+    // Prime first frame before the window is visible to avoid a transparent flash.
+    menu->m_animT = g_config.GlassUIAnimations ? 0.0f : 1.0f;
+    menu->m_animating = g_config.GlassUIAnimations;
+    if (menu->m_animating) menu->m_animStart = std::chrono::steady_clock::now();
+    menu->RenderAndUI();
 
-    ShowWindow(menu->m_hwnd, SW_SHOWNOACTIVATE);
+    ShowWindow(menu->m_hwnd, SW_SHOW);
+    SetForegroundWindow(menu->m_hwnd);
+    menu->m_hasBackdrop = menu->ApplyBackdrop();
+    menu->ArmDismissGrace();
+
     SetCapture(menu->m_hwnd);
     SetTimer(menu->m_hwnd, TIMER_FOCUS, 100, nullptr);
+    if (menu->m_animating) SetTimer(menu->m_hwnd, TIMER_ANIM, 16, nullptr);
 
     s_root = std::move(menu);
 }
@@ -168,53 +238,78 @@ void GeekContextMenu::ShowSubmenuPopup(HWND parent, int sx, int sy,
     sub->m_targetX = x;
     sub->m_targetY = y;
 
-    // Start slightly lower for slide-up
+    const int startY = g_config.GlassUIAnimations ? (y + 10) : y;
     sub->m_hwnd = CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED,
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP,
         CLASS_NAME, nullptr, WS_POPUP,
-        x, y + 10, winSize.cx, winSize.cy,
-        nullptr, nullptr, GetModuleHandle(nullptr), sub.get());
+        x, startY, winSize.cx, winSize.cy,
+        parentMenu->m_hwnd, nullptr, GetModuleHandle(nullptr), sub.get());
 
     if (!sub->m_hwnd) return;
     SetWindowLongPtrW(sub->m_hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(sub.get()));
 
-    sub->m_hasAcrylic = sub->ApplyAcrylic();
-    bool shadowsEnabled = (QuickView::UI::GeekGlass::GetGlobalThemeConfig().shadowOpacity > 0.005f);
-    if (shadowsEnabled) {
-        MARGINS margins = { -1, -1, -1, -1 };
-        DwmExtendFrameIntoClientArea(sub->m_hwnd, &margins);
-    } else {
-        DWORD policy = DWMNCRP_DISABLED;
-        DwmSetWindowAttribute(sub->m_hwnd, DWMWA_NCRENDERING_POLICY, &policy, sizeof(policy));
+    sub->CreateResources();
+    if (!sub->m_dcompSurface || !sub->m_d2dContext) {
+        DestroyWindow(sub->m_hwnd);
+        sub->m_hwnd = nullptr;
+        return;
     }
+
+    sub->ApplyWindowChrome();
     sub->ApplyWindowRegion();
 
-    sub->CreateResources();
-    sub->StartAnimation();
-    ShowWindow(sub->m_hwnd, SW_SHOWNOACTIVATE);
+    sub->m_animT = g_config.GlassUIAnimations ? 0.0f : 1.0f;
+    sub->m_animating = g_config.GlassUIAnimations;
+    if (sub->m_animating) sub->m_animStart = std::chrono::steady_clock::now();
+    sub->RenderAndUI();
+
+    GeekContextMenu* rawSub = sub.get();
     parentMenu->m_childMenu = std::move(sub);
+    parentMenu->GetRoot()->ArmDismissGrace();
+    rawSub->ArmDismissGrace();
+
+    ShowWindow(rawSub->m_hwnd, SW_SHOW);
+    SetForegroundWindow(rawSub->m_hwnd);
+    rawSub->m_hasBackdrop = rawSub->ApplyBackdrop();
+    if (rawSub->m_animating) SetTimer(rawSub->m_hwnd, TIMER_ANIM, 16, nullptr);
 }
 
 void GeekContextMenu::DismissAll(UINT cmdId) {
     if (!s_root) return;
     HWND appHwnd = s_root->m_parentAppHwnd;
+    // Release capture before destroying so the host does not see a spurious CAPTURECHANGED storm.
+    if (s_root->m_hwnd && GetCapture() == s_root->m_hwnd) {
+        ReleaseCapture();
+    }
     s_root.reset();
     if (cmdId && appHwnd) PostMessage(appHwnd, WM_COMMAND, cmdId, 0);
 }
 
-#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
-#define DWMWA_WINDOW_CORNER_PREFERENCE 33
-#define DWMWCP_ROUND 2
-#endif
-
 // ============================================================
-// Window Region (rounded corners via DWM)
+// Window chrome (shadows + frame extension without killing backdrop)
 // ============================================================
-void GeekContextMenu::ApplyWindowRegion() {
+void GeekContextMenu::ApplyWindowChrome() {
     if (!m_hwnd) return;
 
-    // Win11: DWM natively rounds corners and clips the acrylic backdrop.
-    // Win10: API not available — straight corners (no fallback needed).
+    const bool shadowsEnabled =
+        (QuickView::UI::GeekGlass::GetGlobalThemeConfig().shadowOpacity > 0.005f);
+    const bool wantsBackdrop = g_config.EnableGeekGlass;
+
+    // System backdrop and DWM drop-shadow both require the frame to be extended.
+    // Never set DWMNCRP_DISABLED while a backdrop is requested — that kills Mica/Acrylic.
+    if (shadowsEnabled || wantsBackdrop) {
+        MARGINS margins = { -1, -1, -1, -1 };
+        DwmExtendFrameIntoClientArea(m_hwnd, &margins);
+    }
+
+    if (!shadowsEnabled && !wantsBackdrop) {
+        DWORD policy = DWMNCRP_DISABLED;
+        DwmSetWindowAttribute(m_hwnd, DWMWA_NCRENDERING_POLICY, &policy, sizeof(policy));
+    }
+}
+
+void GeekContextMenu::ApplyWindowRegion() {
+    if (!m_hwnd) return;
     DWORD preference = g_config.RoundedCorners ? DWMWCP_ROUND : DWMWCP_DONOTROUND;
     DwmSetWindowAttribute(m_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &preference, sizeof(preference));
 }
@@ -236,12 +331,17 @@ LRESULT CALLBACK GeekContextMenu::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM
 LRESULT GeekContextMenu::HandleMsg(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_PAINT: {
-      ValidateRect(hwnd, nullptr);
-      RenderAndUI();
-      return 0;
+        ValidateRect(hwnd, nullptr);
+        RenderAndUI();
+        return 0;
     }
     case WM_ERASEBKGND:
-      return 1;
+        return 1;
+
+    case WM_NCACTIVATE:
+        // Keep DWM backdrop composition alive even while the menu stays inactive
+        // (SW_SHOWNOACTIVATE). Forcing TRUE avoids the "dead/flat" mica look.
+        return DefWindowProcW(hwnd, msg, TRUE, lp);
 
     case WM_MOUSEMOVE: {
         POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
@@ -264,23 +364,32 @@ LRESULT GeekContextMenu::HandleMsg(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_CAPTURECHANGED: {
-        HWND newCapture = (HWND)lp;
+        if (ShouldSuppressDismiss()) return 0;
+        HWND newCapture = reinterpret_cast<HWND>(lp);
+        // Only dismiss when capture moves to a foreign window. NULL means we
+        // released it ourselves during DismissAll.
         if (newCapture && !IsChainWindow(newCapture)) DismissAll(0);
         return 0;
     }
     case WM_ACTIVATE:
+        // Menus are created with WS_EX_NOACTIVATE + SW_SHOWNOACTIVATE, so this
+        // should rarely fire. Still guard with the grace window.
         if (LOWORD(wp) == WA_INACTIVE) {
-            HWND target = (HWND)lp;
+            if (ShouldSuppressDismiss()) return 0;
+            HWND target = reinterpret_cast<HWND>(lp);
             if (!GetRoot()->IsChainWindow(target))
                 PostMessage(hwnd, WM_APP + 99, 0, 0);
         }
         return 0;
     case WM_APP + 99:
-        DismissAll(0);
+        if (!ShouldSuppressDismiss()) DismissAll(0);
         return 0;
     case WM_TIMER:
         if (wp == TIMER_ANIM) { TickAnimation(); return 0; }
         if (wp == TIMER_FOCUS) {
+            if (ShouldSuppressDismiss()) return 0;
+            // Host app must remain foreground (we never activate the menu).
+            // Dismiss only if a third-party window took focus.
             HWND fg = GetForegroundWindow();
             if (fg && fg != m_parentAppHwnd && !IsChainWindow(fg)) DismissAll(0);
             return 0;
@@ -292,8 +401,8 @@ LRESULT GeekContextMenu::HandleMsg(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSEWHEEL: {
         if (m_totalBodyH <= m_maxBodyH) return 0;
         CloseSubmenu();
-        short delta = (short)HIWORD(wp);
-        m_scrollOffset -= (float)delta / 120.0f * ITEM_H * 3.0f;
+        short delta = static_cast<short>(HIWORD(wp));
+        m_scrollOffset -= static_cast<float>(delta) / 120.0f * ITEM_H * 3.0f;
         float maxScroll = std::max(0.0f, m_totalBodyH - m_maxBodyH);
         if (m_scrollOffset > maxScroll) m_scrollOffset = maxScroll;
         if (m_scrollOffset < 0) m_scrollOffset = 0;
@@ -309,50 +418,109 @@ LRESULT GeekContextMenu::HandleMsg(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 // ============================================================
-// DWM Acrylic
+// DWM Backdrop (Mica / Mica Alt / Acrylic)
 // ============================================================
-bool GeekContextMenu::ApplyAcrylic() {
-    auto fn = GetSWCA();
-    if (!fn || !m_hwnd) return false;
-    ACCENT_POLICY accent = {};
-    accent.nAccentState = ACCENT_ENABLE_ACRYLICBLURBEHIND;
-    accent.nFlags = 0; // Standard acrylic
-    accent.nColor = m_isLight ? 0x0AF0F0F0 : 0x0A101018; // Ultra-low 0x0A alpha (4%) to keep blur active with minimal tint interference
-    WINCOMPATTRDATA data = {};
-    data.nAttribute = 19;
-    data.pvData = &accent;
-    data.cbData = sizeof(accent);
-    if (fn(m_hwnd, &data)) return true;
-    accent.nAccentState = ACCENT_ENABLE_BLURBEHIND;
-    return fn(m_hwnd, &data) != FALSE;
+bool GeekContextMenu::ApplyBackdrop() {
+    if (!m_hwnd) return false;
+
+    // Dark/light mode must be set for correct DWM tint of Mica/Acrylic.
+    BOOL darkMode = m_isLight ? FALSE : TRUE;
+    DwmSetWindowAttribute(m_hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+
+    // Frame extension is required so the backdrop fills the entire client area.
+    MARGINS margins = { -1, -1, -1, -1 };
+    DwmExtendFrameIntoClientArea(m_hwnd, &margins);
+
+    const bool isWin11 = SystemInfo::IsWindows11OrGreater();
+    if (isWin11 && g_config.EnableGeekGlass) {
+        int backdrop = ResolveSystemBackdropType();
+        HRESULT hr = DwmSetWindowAttribute(m_hwnd, DWMWA_SYSTEMBACKDROP_TYPE,
+                                           &backdrop, sizeof(backdrop));
+        if (SUCCEEDED(hr) && backdrop != DWMSBT_NONE) {
+            return true;
+        }
+        // Fall through to SWCA if system backdrop is unavailable (pre-22H2).
+    }
+
+    // Win10 / fallback: undocumented acrylic via SetWindowCompositionAttribute.
+    // Works on non-layered WS_EX_NOREDIRECTIONBITMAP popups when content has alpha.
+    if (g_config.EnableGeekGlass) {
+        auto fn = GetSWCA();
+        if (fn) {
+            ACCENT_POLICY accent = {};
+            accent.nAccentState = ACCENT_ENABLE_ACRYLICBLURBEHIND;
+            // GradientColor is ABGR: low alpha keeps blur dominant, tint subtle.
+            accent.nColor = m_isLight ? 0x0AF0F0F0 : 0x0A101018;
+            accent.nFlags = 0;
+            WINCOMPATTRDATA data = {};
+            data.nAttribute = 19; // WCA_ACCENT_POLICY
+            data.pvData = &accent;
+            data.cbData = sizeof(accent);
+            if (fn(m_hwnd, &data)) return true;
+
+            // Last resort: classic blur-behind.
+            accent.nAccentState = ACCENT_ENABLE_BLURBEHIND;
+            if (fn(m_hwnd, &data)) return true;
+        }
+    } else if (isWin11) {
+        int none = DWMSBT_NONE;
+        DwmSetWindowAttribute(m_hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &none, sizeof(none));
+    }
+
+    return false;
 }
 
 // ============================================================
-// D2D Resources
+// D2D / DComp Resources
 // ============================================================
 void GeekContextMenu::CreateResources() {
-    if (m_rt) return;
-    D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, m_factory.GetAddressOf());
+    if (m_d2dContext) return;
+    if (!g_compEngine) return;
+
+    ID2D1Device* d2dDevice = g_compEngine->GetD2DDevice();
+    if (!d2dDevice) return;
+
+    // Private DComp device bound to the same DXGI device as the app.
+    // Committing here never flushes the main window's composition graph.
+    ComPtr<IDXGIDevice> dxgiDevice;
+    if (!g_pRenderEngine || !g_pRenderEngine->GetD3DDevice()) return;
+    if (FAILED(g_pRenderEngine->GetD3DDevice()->QueryInterface(IID_PPV_ARGS(&dxgiDevice))) || !dxgiDevice)
+        return;
+
+    HRESULT hr = DCompositionCreateDevice2(dxgiDevice.Get(), IID_PPV_ARGS(&m_dcompDevice));
+    if (FAILED(hr) || !m_dcompDevice) return;
+
     DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
                         reinterpret_cast<IUnknown**>(m_dwFactory.GetAddressOf()));
-    if (!m_factory || !m_dwFactory) return;
+    if (!m_dwFactory) return;
 
-    m_rt.Reset();
-    RECT rc; GetClientRect(m_hwnd, &rc);
-    auto rtProps = D2D1::RenderTargetProperties(
-        D2D1_RENDER_TARGET_TYPE_DEFAULT,
-        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
-    m_factory->CreateDCRenderTarget(&rtProps, &m_rt);
-    if (!m_rt) return;
-    // [Fix] ContextMenu uses TrackB_DWM (DWM acrylic) which doesn't need D2D effects like blur.
-    // Initializing these effects on a DCRenderTarget triggers the WARP JIT compiler to compile compute shaders,
-    // causing a massive ~600MB memory spike that doesn't drop. Skipping initialization avoids this.
-    // m_glassEngine.InitializeResources(m_rt.Get());
+    hr = d2dDevice->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &m_d2dContext);
+    if (FAILED(hr) || !m_d2dContext) return;
+
+    // DIP space: fonts/layout are authored in DIPs; HWND size is already scaled.
+    m_d2dContext->SetDpi(96.0f * m_scale, 96.0f * m_scale);
+    m_d2dContext->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+
+    SIZE winSize = GetWindowSize();
+    hr = m_dcompDevice->CreateTargetForHwnd(m_hwnd, TRUE, &m_dcompTarget);
+    if (FAILED(hr)) return;
+
+    hr = m_dcompDevice->CreateVisual(&m_dcompVisual);
+    if (FAILED(hr)) return;
+
+    m_dcompTarget->SetRoot(m_dcompVisual.Get());
+
+    hr = m_dcompDevice->CreateSurface(
+        winSize.cx, winSize.cy,
+        DXGI_FORMAT_B8G8R8A8_UNORM,
+        DXGI_ALPHA_MODE_PREMULTIPLIED,
+        &m_dcompSurface);
+    if (FAILED(hr)) return;
+
+    m_dcompVisual->SetContent(m_dcompSurface.Get());
+    m_dcompDevice->Commit();
+
     const bool isWin11 = SystemInfo::IsWindows11OrGreater();
-
-    // Text formats
-    // Win11: Segoe UI Variable Small (Modern, Variable spacing)
-    // Win10: Segoe UI (Classic standard)
     const wchar_t* mainFontFamily = isWin11 ? L"Segoe UI Variable Small" : L"Segoe UI";
 
     m_dwFactory->CreateTextFormat(mainFontFamily, nullptr,
@@ -375,23 +543,18 @@ void GeekContextMenu::CreateResources() {
         m_actionFont->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
+    const bool L = m_isLight;
+    m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.22f, 0.20f), &m_dangerTextBrush);
+    m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(0.85f, 0.15f, 0.10f, 0.25f), &m_dangerBrush);
+    m_d2dContext->CreateSolidColorBrush(
+        D2D1::ColorF(L ? 0.35f : 0.75f, L ? 0.40f : 0.75f, L ? 0.48f : 0.75f), &m_dimBrush);
+    m_d2dContext->CreateSolidColorBrush(
+        D2D1::ColorF(L ? 0.55f : 0.40f, L ? 0.55f : 0.40f, L ? 0.57f : 0.42f), &m_disabledBrush);
+    m_d2dContext->CreateSolidColorBrush(
+        L ? D2D1::ColorF(0, 0, 0, 0.12f) : D2D1::ColorF(1, 1, 1, 0.10f), &m_sepBrush);
 
-    bool L = m_isLight;
-    // Danger/Critical accent (Red)
-    m_rt->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.22f, 0.20f), &m_dangerTextBrush);
-    m_rt->CreateSolidColorBrush(D2D1::ColorF(0.85f, 0.15f, 0.10f, 0.25f), &m_dangerBrush);
-    
-    // Auxiliary Brushes
-    // [Adaptive Contrast] Match Settings Palette secondary text standards
-    m_rt->CreateSolidColorBrush(D2D1::ColorF(L ? 0.35f : 0.75f, L ? 0.40f : 0.75f, L ? 0.48f : 0.75f), &m_dimBrush);
-    m_rt->CreateSolidColorBrush(D2D1::ColorF(L ? 0.55f : 0.40f, L ? 0.55f : 0.40f, L ? 0.57f : 0.42f), &m_disabledBrush);
-
-    // Separator line (Decoupled from global opacity to ensure visibility)
-    m_rt->CreateSolidColorBrush(D2D1::ColorF(L ? D2D1::ColorF(0,0,0,0.12f) : D2D1::ColorF(1,1,1,0.10f)), &m_sepBrush);
-
-    // Accent and Text Colors (Respect Custom Theme)
     D2D1_COLOR_F accentClr, textClr;
-    if (g_config.ThemeMode == 3) { // Custom
+    if (g_config.ThemeMode == 3) {
         accentClr = D2D1::ColorF(g_config.ThemeCustomAccentR, g_config.ThemeCustomAccentG, g_config.ThemeCustomAccentB);
         textClr   = D2D1::ColorF(g_config.ThemeCustomTextR, g_config.ThemeCustomTextG, g_config.ThemeCustomTextB);
     } else {
@@ -399,28 +562,21 @@ void GeekContextMenu::CreateResources() {
         textClr   = L ? PRESET_LIGHT.textColor : PRESET_DARK.textColor;
     }
 
-    m_rt->CreateSolidColorBrush(accentClr, &m_accentBrush);
-    m_rt->CreateSolidColorBrush(textClr, &m_textBrush);
+    m_d2dContext->CreateSolidColorBrush(accentClr, &m_accentBrush);
+    m_d2dContext->CreateSolidColorBrush(textClr, &m_textBrush);
 
-    // Hover Highlight (Using a softened version of the accent or standard grey)
     D2D1_COLOR_F hoverClr = accentClr;
-    hoverClr.a = L ? 0.12f : 0.15f; 
-    m_rt->CreateSolidColorBrush(hoverClr, &m_hoverBrush);
+    hoverClr.a = L ? 0.12f : 0.15f;
+    m_d2dContext->CreateSolidColorBrush(hoverClr, &m_hoverBrush);
 
-    m_rt->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, L ? 0.50f : 0.12f), &m_bevelLightBrush);
-    m_rt->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, L ? 0.06f : 0.25f), &m_bevelDarkBrush);
-    // Capsule (Decoupled from global density to ensure UI visibility at low
-    // concentrations) Corrected logic: Light mode uses White(Additive) for
-    // elevation, Dark mode uses Black(Subtractive) for recession
-    m_rt->CreateSolidColorBrush(D2D1::ColorF(L ? D2D1::ColorF(1, 1, 1, 0.25f)
-                                               : D2D1::ColorF(0, 0, 0, 0.20f)),
-                                &m_capsuleBrush);
-    m_rt->CreateSolidColorBrush(D2D1::ColorF(L ? D2D1::ColorF(1, 1, 1, 0.35f)
-                                               : D2D1::ColorF(0, 0, 0, 0.30f)),
-                                &m_capsuleBorderBrush);
+    m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, L ? 0.50f : 0.12f), &m_bevelLightBrush);
+    m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, L ? 0.06f : 0.25f), &m_bevelDarkBrush);
+    m_d2dContext->CreateSolidColorBrush(
+        L ? D2D1::ColorF(1, 1, 1, 0.25f) : D2D1::ColorF(0, 0, 0, 0.20f), &m_capsuleBrush);
+    m_d2dContext->CreateSolidColorBrush(
+        L ? D2D1::ColorF(1, 1, 1, 0.35f) : D2D1::ColorF(0, 0, 0, 0.30f), &m_capsuleBorderBrush);
 
-    // Diagonal gradient
-    auto sz = m_rt->GetSize();
+    auto sz = m_d2dContext->GetSize();
     D2D1_GRADIENT_STOP stops[2];
     if (L) {
         stops[0] = { 0.0f, D2D1::ColorF(1, 1, 1, 0.30f) };
@@ -430,17 +586,21 @@ void GeekContextMenu::CreateResources() {
         stops[1] = { 1.0f, D2D1::ColorF(0.03f, 0.03f, 0.04f, 0.25f) };
     }
     ComPtr<ID2D1GradientStopCollection> coll;
-    m_rt->CreateGradientStopCollection(stops, 2, &coll);
+    m_d2dContext->CreateGradientStopCollection(stops, 2, &coll);
     if (coll) {
-        m_rt->CreateLinearGradientBrush(
+        m_d2dContext->CreateLinearGradientBrush(
             D2D1::LinearGradientBrushProperties(D2D1::Point2F(0, 0), D2D1::Point2F(sz.width, sz.height)),
             coll.Get(), &m_diagBrush);
     }
-
 }
 
 void GeekContextMenu::DiscardResources() {
-    m_rt.Reset(); m_factory.Reset(); m_dwFactory.Reset();
+    m_dcompSurface.Reset();
+    m_dcompVisual.Reset();
+    m_dcompTarget.Reset();
+    m_dcompDevice.Reset();
+    m_d2dContext.Reset();
+    m_dwFactory.Reset();
     m_itemFont.Reset(); m_shortcutFont.Reset(); m_actionFont.Reset();
     m_diagBrush.Reset();
     m_textBrush.Reset(); m_dimBrush.Reset(); m_disabledBrush.Reset();
@@ -463,15 +623,15 @@ void GeekContextMenu::CalculateLayout() {
 
     if (!m_actions.empty()) {
         float pad = MENU_PAD;
-        float bw = (m_menuW - pad * 2) / (float)m_actions.size();
-        for (int i = 0; i < (int)m_actions.size(); i++) {
+        float bw = (m_menuW - pad * 2) / static_cast<float>(m_actions.size());
+        for (int i = 0; i < static_cast<int>(m_actions.size()); i++) {
             m_actions[i].hitRect = D2D1::RectF(
                 pad + i * bw, pad,
                 pad + (i + 1) * bw, m_actionRowH - 2);
         }
     }
 
-    float y = 0.0f; // Body-local Y
+    float y = 0.0f;
     for (auto& item : m_items) {
         float h = (item.type == MenuItemType::Separator) ? SEP_H : itemH;
         item.hitRect = D2D1::RectF(0, y, m_menuW, y + h);
@@ -479,17 +639,14 @@ void GeekContextMenu::CalculateLayout() {
     }
     m_totalBodyH = y;
 
-    // Calculate max height based on monitor
     POINT pt = m_originPt;
     HMONITOR hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
     MONITORINFO mi = {}; mi.cbSize = sizeof(mi);
     GetMonitorInfoW(hMon, &mi);
-    float waH = (float)(mi.rcWork.bottom - mi.rcWork.top) / m_scale;
-    
-    // Max menu height should be around 85% of work area height
+    float waH = static_cast<float>(mi.rcWork.bottom - mi.rcWork.top) / m_scale;
+
     m_maxBodyH = (waH * 0.85f) - m_actionRowH - MENU_PAD * 2.0f;
-    
-    // Clamp scroll offset
+
     float maxScroll = std::max(0.0f, m_totalBodyH - m_maxBodyH);
     if (m_scrollOffset > maxScroll) m_scrollOffset = maxScroll;
     if (m_scrollOffset < 0) m_scrollOffset = 0;
@@ -499,79 +656,71 @@ SIZE GeekContextMenu::GetWindowSize() const {
     float bodyH = std::min(m_totalBodyH, m_maxBodyH);
     float bottomPad = m_actions.empty() ? 16.0f : MENU_PAD;
     float totalH = m_bodyStartY + bodyH + bottomPad;
-    return { (LONG)std::ceil(m_menuW * m_scale), (LONG)std::ceil(totalH * m_scale) };
+    return { static_cast<LONG>(std::ceil(m_menuW * m_scale)),
+             static_cast<LONG>(std::ceil(totalH * m_scale)) };
 }
 
 // ============================================================
-// Paint
+// Paint helpers
 // ============================================================
 void GeekContextMenu::Paint() { RenderAndUI(); }
-// ============================================================
-// Render Helpers
-// ============================================================
+
 void GeekContextMenu::RenderCapsule() {
     if (m_actions.empty() || !m_capsuleBrush) return;
-    // Capsule: rounded rect spanning all action buttons
     float pad = MENU_PAD;
     D2D1_RECT_F capsR = D2D1::RectF(pad, pad, m_menuW - pad, m_actionRowH - 2);
     float cr = 8.0f;
     D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(capsR, cr, cr);
-    m_rt->FillRoundedRectangle(rr, m_capsuleBrush.Get());
+    m_d2dContext->FillRoundedRectangle(rr, m_capsuleBrush.Get());
     if (m_capsuleBorderBrush)
-        m_rt->DrawRoundedRectangle(rr, m_capsuleBorderBrush.Get(), 0.8f);
+        m_d2dContext->DrawRoundedRectangle(rr, m_capsuleBorderBrush.Get(), 0.8f);
 
-    // Vertical dividers between action buttons
     if (m_capsuleBorderBrush) {
-        for (int i = 1; i < (int)m_actions.size(); i++) {
+        for (int i = 1; i < static_cast<int>(m_actions.size()); i++) {
             float x = m_actions[i].hitRect.left;
-            m_rt->DrawLine(
+            m_d2dContext->DrawLine(
                 D2D1::Point2F(x, capsR.top + 10),
                 D2D1::Point2F(x, capsR.bottom - 10),
                 m_capsuleBorderBrush.Get(), 0.8f);
         }
     }
-
 }
 
 void GeekContextMenu::RenderActionRow() {
     if (m_actions.empty()) return;
     float icoSz = ACTION_ICON;
 
-    for (int i = 0; i < (int)m_actions.size(); i++) {
+    for (int i = 0; i < static_cast<int>(m_actions.size()); i++) {
         const auto& btn = m_actions[i];
         D2D1_RECT_F r = btn.hitRect;
 
-        // Hover highlight within capsule
         if (i == m_hoverAction && btn.isEnabled) {
-            float cr = 6;
-            D2D1_ROUNDED_RECT hr = D2D1::RoundedRect(r, cr, cr);
+            D2D1_ROUNDED_RECT hr = D2D1::RoundedRect(r, 6, 6);
             if (btn.isDanger)
-                m_rt->FillRoundedRectangle(hr, m_dangerBrush.Get());
+                m_d2dContext->FillRoundedRectangle(hr, m_dangerBrush.Get());
             else
-                m_rt->FillRoundedRectangle(hr, m_hoverBrush.Get());
+                m_d2dContext->FillRoundedRectangle(hr, m_hoverBrush.Get());
         }
 
         float cx = (r.left + r.right) / 2;
         float iconY = r.top + 10;
-        D2D1_RECT_F iconR = D2D1::RectF(cx - icoSz/2, iconY, cx + icoSz/2, iconY + icoSz);
+        D2D1_RECT_F iconR = D2D1::RectF(cx - icoSz / 2, iconY, cx + icoSz / 2, iconY + icoSz);
 
-        // Icon color: accent blue (or custom) for normal, red for delete
         ID2D1Brush* iconBrush = btn.isEnabled ? m_accentBrush.Get() : m_disabledBrush.Get();
         if (btn.isDanger && btn.isEnabled) iconBrush = m_dangerTextBrush.Get();
-        
+
         if (btn.iconGlyph) {
-            GeekIconRenderer::DrawVectorIcon(m_rt.Get(), *btn.iconGlyph, iconR, iconBrush);
+            GeekIconRenderer::DrawVectorIcon(m_d2dContext.Get(), *btn.iconGlyph, iconR, iconBrush);
         }
 
-        // Label
         if (m_actionFont && btn.label) {
             D2D1_RECT_F labR = D2D1::RectF(r.left, iconY + icoSz + 3, r.right, r.bottom);
             ID2D1Brush* tb = btn.isEnabled ? m_textBrush.Get() : m_disabledBrush.Get();
             const wchar_t* tab = wcschr(btn.label, L'\t');
             if (tab) {
-                m_rt->DrawText(btn.label, (UINT32)(tab - btn.label), m_actionFont.Get(), labR, tb);
+                m_d2dContext->DrawText(btn.label, static_cast<UINT32>(tab - btn.label), m_actionFont.Get(), labR, tb);
             } else {
-                m_rt->DrawText(btn.label, (UINT32)wcslen(btn.label), m_actionFont.Get(), labR, tb);
+                m_d2dContext->DrawText(btn.label, static_cast<UINT32>(wcslen(btn.label)), m_actionFont.Get(), labR, tb);
             }
         }
     }
@@ -580,18 +729,17 @@ void GeekContextMenu::RenderActionRow() {
 void GeekContextMenu::RenderItems() {
     float bodyH = std::min(m_totalBodyH, m_maxBodyH);
     D2D1_RECT_F clipR = D2D1::RectF(0, m_bodyStartY, m_menuW, m_bodyStartY + bodyH);
-    m_rt->PushAxisAlignedClip(clipR, D2D1_ANTIALIAS_MODE_ALIASED);
+    m_d2dContext->PushAxisAlignedClip(clipR, D2D1_ANTIALIAS_MODE_ALIASED);
 
     D2D1_MATRIX_3X2_F oldXform;
-    m_rt->GetTransform(&oldXform);
+    m_d2dContext->GetTransform(&oldXform);
 
-    D2D1_MATRIX_3X2_F transform = D2D1::Matrix3x2F::Translation(0, m_bodyStartY - m_scrollOffset) * oldXform;
-    m_rt->SetTransform(transform);
+    D2D1_MATRIX_3X2_F transform =
+        D2D1::Matrix3x2F::Translation(0, m_bodyStartY - m_scrollOffset) * oldXform;
+    m_d2dContext->SetTransform(transform);
 
-    for (int i = 0; i < (int)m_items.size(); i++) {
+    for (int i = 0; i < static_cast<int>(m_items.size()); i++) {
         const auto& item = m_items[i];
-        
-        // Skip items outside visible range
         if (item.hitRect.bottom < m_scrollOffset) continue;
         if (item.hitRect.top > m_scrollOffset + bodyH) continue;
 
@@ -603,8 +751,8 @@ void GeekContextMenu::RenderItems() {
         }
     }
 
-    m_rt->SetTransform(oldXform);
-    m_rt->PopAxisAlignedClip();
+    m_d2dContext->SetTransform(oldXform);
+    m_d2dContext->PopAxisAlignedClip();
 
     RenderScrollIndicators();
 }
@@ -613,23 +761,19 @@ void GeekContextMenu::RenderScrollIndicators() {
     if (m_totalBodyH <= m_maxBodyH) return;
 
     float indicatorSize = 10.0f;
-    float arrowEdgePad = 3.0f; // (16px padding - 10px arrow) / 2 = 3px centered
+    float arrowEdgePad = 3.0f;
 
-    // Up arrow
     if (m_scrollOffset > 0.1f) {
         D2D1_RECT_F upR = D2D1::RectF(m_menuW / 2 - indicatorSize / 2, arrowEdgePad,
                                      m_menuW / 2 + indicatorSize / 2, arrowEdgePad + indicatorSize);
-        // Use ChevronVector (Right) rotated 270 degrees for Up
-        GeekIconRenderer::DrawVectorIcon(m_rt.Get(), GeekIcons::ChevronVector, upR, m_accentBrush.Get(), 270.0f);
+        GeekIconRenderer::DrawVectorIcon(m_d2dContext.Get(), GeekIcons::ChevronVector, upR, m_accentBrush.Get(), 270.0f);
     }
 
-    // Down arrow
     if (m_scrollOffset < m_totalBodyH - m_maxBodyH - 0.1f) {
         float windowH = GetWindowSize().cy / m_scale;
         D2D1_RECT_F downR = D2D1::RectF(m_menuW / 2 - indicatorSize / 2, windowH - arrowEdgePad - indicatorSize,
                                        m_menuW / 2 + indicatorSize / 2, windowH - arrowEdgePad);
-        // Use ChevronVector (Right) rotated 90 degrees for Down
-        GeekIconRenderer::DrawVectorIcon(m_rt.Get(), GeekIcons::ChevronVector, downR, m_accentBrush.Get(), 90.0f);
+        GeekIconRenderer::DrawVectorIcon(m_d2dContext.Get(), GeekIcons::ChevronVector, downR, m_accentBrush.Get(), 90.0f);
     }
 }
 
@@ -637,100 +781,91 @@ void GeekContextMenu::RenderItem(const GeekMenuItem& item, int index) {
     D2D1_RECT_F r = item.hitRect;
     float rh = r.bottom - r.top;
 
-    // Hover background
     if (index == m_hoverItem && item.isEnabled) {
         float inset = MENU_PAD;
         D2D1_RECT_F hr = D2D1::RectF(r.left + inset, r.top + 1, r.right - inset, r.bottom - 1);
         D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(hr, 5, 5);
         if (item.isDanger)
-            m_rt->FillRoundedRectangle(rr, m_dangerBrush.Get());
+            m_d2dContext->FillRoundedRectangle(rr, m_dangerBrush.Get());
         else
-            m_rt->FillRoundedRectangle(rr, m_hoverBrush.Get());
+            m_d2dContext->FillRoundedRectangle(rr, m_hoverBrush.Get());
     }
 
-    // Text/icon color — red for delete items
     ID2D1SolidColorBrush* tb = item.isEnabled ? m_textBrush.Get() : m_disabledBrush.Get();
     if (item.isDanger && item.isEnabled) tb = m_dangerTextBrush.Get();
 
-    // Checkmark
     if ((item.type == MenuItemType::CheckBox || item.type == MenuItemType::Submenu) && item.isChecked) {
         D2D1_RECT_F checkR = D2D1::RectF(r.left + ICON_LEFT - 2, r.top + (rh - ICON_SIZE) / 2,
                                            r.left + ICON_LEFT + ICON_SIZE - 2, r.top + (rh + ICON_SIZE) / 2);
-        GeekIconRenderer::DrawVectorIcon(m_rt.Get(), GeekIcons::CheckVector, checkR, m_accentBrush.Get());
+        GeekIconRenderer::DrawVectorIcon(m_d2dContext.Get(), GeekIcons::CheckVector, checkR, m_accentBrush.Get());
     }
 
-    // Icon
     if (item.iconGlyph && !((item.type == MenuItemType::CheckBox || item.type == MenuItemType::Submenu) && item.isChecked)) {
         float iconScale = 1.0f;
         if (item.iconGlyph == GeekIcons::Exit) {
-            iconScale = 0.84f; // Exit glyph is visually heavier; keep it optically aligned with peers.
+            iconScale = 0.84f;
         }
         const float iconW = ICON_SIZE * iconScale;
         const float iconX = r.left + ICON_LEFT + (ICON_SIZE - iconW) * 0.5f;
         D2D1_RECT_F iconR = D2D1::RectF(iconX, r.top + (rh - iconW) / 2,
                                           iconX + iconW, r.top + (rh + iconW) / 2);
-        GeekIconRenderer::DrawVectorIcon(m_rt.Get(), *item.iconGlyph, iconR, tb);
+        GeekIconRenderer::DrawVectorIcon(m_d2dContext.Get(), *item.iconGlyph, iconR, tb);
     }
 
-    // Text and Shortcut (Split by \t dynamically if present)
     if (m_itemFont && item.text) {
         const wchar_t* tab = wcschr(item.text, L'\t');
         if (tab) {
-            // Draw left label
             D2D1_RECT_F textR = D2D1::RectF(r.left + TEXT_LEFT, r.top, r.right - TEXT_RIGHT - 24, r.bottom);
-            m_rt->DrawText(item.text, (UINT32)(tab - item.text), m_itemFont.Get(), textR, tb);
+            m_d2dContext->DrawText(item.text, static_cast<UINT32>(tab - item.text), m_itemFont.Get(), textR, tb);
 
-            // Draw right shortcut
             if (m_shortcutFont) {
                 const wchar_t* sc = tab + 1;
                 D2D1_RECT_F scR = D2D1::RectF(r.right - TEXT_RIGHT - 90, r.top, r.right - TEXT_RIGHT, r.bottom);
                 m_shortcutFont->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
-                m_rt->DrawText(sc, (UINT32)wcslen(sc), m_shortcutFont.Get(), scR, m_dimBrush.Get());
+                m_d2dContext->DrawText(sc, static_cast<UINT32>(wcslen(sc)), m_shortcutFont.Get(), scR, m_dimBrush.Get());
                 m_shortcutFont->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             }
         } else {
-            // Draw normal text
             D2D1_RECT_F textR = D2D1::RectF(r.left + TEXT_LEFT, r.top, r.right - TEXT_RIGHT - 24, r.bottom);
-            m_rt->DrawText(item.text, (UINT32)wcslen(item.text), m_itemFont.Get(), textR, tb);
+            m_d2dContext->DrawText(item.text, static_cast<UINT32>(wcslen(item.text)), m_itemFont.Get(), textR, tb);
 
-            // Draw normal shortcut if provided
             if (item.shortcut && item.shortcut[0] != L'\0' && m_shortcutFont) {
                 D2D1_RECT_F scR = D2D1::RectF(r.right - TEXT_RIGHT - 90, r.top, r.right - TEXT_RIGHT, r.bottom);
                 m_shortcutFont->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
-                m_rt->DrawText(item.shortcut, (UINT32)wcslen(item.shortcut), m_shortcutFont.Get(), scR, m_dimBrush.Get());
+                m_d2dContext->DrawText(item.shortcut, static_cast<UINT32>(wcslen(item.shortcut)), m_shortcutFont.Get(), scR, m_dimBrush.Get());
                 m_shortcutFont->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             }
         }
     }
 
-    // Submenu chevron
     if (item.type == MenuItemType::Submenu) {
         D2D1_RECT_F chevR = D2D1::RectF(r.right - TEXT_RIGHT - 2, r.top + (rh - 8) / 2,
                                           r.right - TEXT_RIGHT + 6, r.top + (rh + 8) / 2);
-        GeekIconRenderer::DrawVectorIcon(m_rt.Get(), GeekIcons::ChevronVector, chevR, m_dimBrush.Get());
+        GeekIconRenderer::DrawVectorIcon(m_d2dContext.Get(), GeekIcons::ChevronVector, chevR, m_dimBrush.Get());
     }
 }
 
 void GeekContextMenu::RenderSeparator(float y) {
     if (m_sepBrush) {
-        m_rt->DrawLine(D2D1::Point2F(ICON_LEFT + ICON_SIZE + 6, y),
+        m_d2dContext->DrawLine(D2D1::Point2F(ICON_LEFT + ICON_SIZE + 6, y),
                        D2D1::Point2F(m_menuW - 14, y), m_sepBrush.Get(), 1.0f);
     }
 }
 
 void GeekContextMenu::RenderBevel() {
-    auto sz = m_rt->GetSize();
+    auto sz = m_d2dContext->GetSize();
+    const float cr = g_config.RoundedCorners ? CORNER_R : 0.0f;
     D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(
-        D2D1::RectF(0.5f, 0.5f, sz.width - 0.5f, sz.height - 0.5f), g_config.RoundedCorners ? CORNER_R : 0.0f, g_config.RoundedCorners ? CORNER_R : 0.0f);
+        D2D1::RectF(0.5f, 0.5f, sz.width - 0.5f, sz.height - 0.5f), cr, cr);
     if (m_bevelLightBrush)
-        m_rt->DrawRoundedRectangle(rr, m_bevelLightBrush.Get(), 1.0f);
+        m_d2dContext->DrawRoundedRectangle(rr, m_bevelLightBrush.Get(), 1.0f);
 }
 
 // ============================================================
 // Hit Testing
 // ============================================================
 int GeekContextMenu::HitTestAction(float lx, float ly) const {
-    for (int i = 0; i < (int)m_actions.size(); i++) {
+    for (int i = 0; i < static_cast<int>(m_actions.size()); i++) {
         const auto& r = m_actions[i].hitRect;
         if (lx >= r.left && lx < r.right && ly >= r.top && ly < r.bottom) return i;
     }
@@ -740,7 +875,7 @@ int GeekContextMenu::HitTestAction(float lx, float ly) const {
 int GeekContextMenu::HitTestItem(float lx, float ly) const {
     if (ly < m_bodyStartY || ly > m_bodyStartY + std::min(m_totalBodyH, m_maxBodyH)) return -1;
     float bodyLy = ly - m_bodyStartY + m_scrollOffset;
-    for (int i = 0; i < (int)m_items.size(); i++) {
+    for (int i = 0; i < static_cast<int>(m_items.size()); i++) {
         const auto& r = m_items[i].hitRect;
         if (m_items[i].type == MenuItemType::Separator) continue;
         if (lx >= r.left && lx < r.right && bodyLy >= r.top && bodyLy < r.bottom) return i;
@@ -752,15 +887,14 @@ int GeekContextMenu::HitTestItem(float lx, float ly) const {
 // Mouse Handling
 // ============================================================
 void GeekContextMenu::OnMouseMove(POINT screenPt) {
-    // Route to child submenu first
     if (m_childMenu && m_childMenu->m_hwnd) {
         RECT childRc;
         GetWindowRect(m_childMenu->m_hwnd, &childRc);
         if (PtInRect(&childRc, screenPt)) {
             POINT local = screenPt;
             ScreenToClient(m_childMenu->m_hwnd, &local);
-            float lx = (float)local.x / m_scale;
-            float ly = (float)local.y / m_scale;
+            float lx = static_cast<float>(local.x) / m_scale;
+            float ly = static_cast<float>(local.y) / m_scale;
             int oldHover = m_childMenu->m_hoverItem;
             m_childMenu->m_hoverAction = -1;
             m_childMenu->m_hoverItem = m_childMenu->HitTestItem(lx, ly);
@@ -783,8 +917,8 @@ void GeekContextMenu::OnMouseMove(POINT screenPt) {
 
     POINT local = screenPt;
     ScreenToClient(m_hwnd, &local);
-    float lx = (float)local.x / m_scale;
-    float ly = (float)local.y / m_scale;
+    float lx = static_cast<float>(local.x) / m_scale;
+    float ly = static_cast<float>(local.y) / m_scale;
 
     int oldAction = m_hoverAction;
     int oldItem = m_hoverItem;
@@ -795,8 +929,7 @@ void GeekContextMenu::OnMouseMove(POINT screenPt) {
     if (m_hoverAction != oldAction || m_hoverItem != oldItem) {
         InvalidateRect(m_hwnd, nullptr, FALSE);
 
-        // Instant submenu trigger (no 200ms delay — responsive feel)
-        if (m_hoverItem >= 0 && m_hoverItem < (int)m_items.size()) {
+        if (m_hoverItem >= 0 && m_hoverItem < static_cast<int>(m_items.size())) {
             if (m_items[m_hoverItem].type == MenuItemType::Submenu) {
                 if (m_hoverItem != m_submenuIdx)
                     OpenSubmenu(m_hoverItem);
@@ -826,16 +959,17 @@ void GeekContextMenu::OnLButtonUp(POINT screenPt) {
 
     POINT local = screenPt;
     ScreenToClient(m_hwnd, &local);
-    float lx = (float)local.x / m_scale, ly = (float)local.y / m_scale;
+    float lx = static_cast<float>(local.x) / m_scale;
+    float ly = static_cast<float>(local.y) / m_scale;
 
     int ai = HitTestAction(lx, ly);
-    if (ai >= 0 && ai < (int)m_actions.size() && m_actions[ai].isEnabled) {
+    if (ai >= 0 && ai < static_cast<int>(m_actions.size()) && m_actions[ai].isEnabled) {
         DismissAll(m_actions[ai].commandId);
         return;
     }
 
     int ii = HitTestItem(lx, ly);
-    if (ii >= 0 && ii < (int)m_items.size()) {
+    if (ii >= 0 && ii < static_cast<int>(m_items.size())) {
         const auto& item = m_items[ii];
         if (!item.isEnabled) return;
         if (item.type == MenuItemType::Submenu) { OpenSubmenu(ii); return; }
@@ -847,7 +981,7 @@ void GeekContextMenu::OnLButtonUp(POINT screenPt) {
 // Submenu Management
 // ============================================================
 void GeekContextMenu::OpenSubmenu(int index) {
-    if (index < 0 || index >= (int)m_items.size()) return;
+    if (index < 0 || index >= static_cast<int>(m_items.size())) return;
     if (m_submenuIdx == index && m_childMenu) return;
     CloseSubmenu();
     m_submenuIdx = index;
@@ -855,15 +989,20 @@ void GeekContextMenu::OpenSubmenu(int index) {
     RECT selfRc;
     GetWindowRect(m_hwnd, &selfRc);
     const auto& item = m_items[index];
-    int sx = selfRc.right - (int)(4 * m_scale);
+    int sx = selfRc.right - static_cast<int>(4 * m_scale);
     float itemBodyY = item.hitRect.top - m_scrollOffset;
-    int sy = selfRc.top + (int)((m_bodyStartY + itemBodyY) * m_scale) - (int)(4 * m_scale);
+    int sy = selfRc.top + static_cast<int>((m_bodyStartY + itemBodyY) * m_scale) - static_cast<int>(4 * m_scale);
 
     ShowSubmenuPopup(m_parentAppHwnd, sx, sy, item.submenu, this);
 }
 
 void GeekContextMenu::CloseSubmenu() {
-    m_childMenu.reset();
+    if (m_childMenu) {
+        if (m_hwnd && IsWindow(m_hwnd) && GetForegroundWindow() == m_childMenu->m_hwnd) {
+            SetForegroundWindow(m_hwnd);
+        }
+        m_childMenu.reset();
+    }
     m_submenuIdx = -1;
 }
 
@@ -891,11 +1030,19 @@ GeekContextMenu* GeekContextMenu::GetRoot() {
     return r;
 }
 
+void GeekContextMenu::ArmDismissGrace() {
+    m_suppressDismissUntil =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(DISMISS_GRACE_MS);
+}
+
+bool GeekContextMenu::ShouldSuppressDismiss() const {
+    return std::chrono::steady_clock::now() < m_suppressDismissUntil;
+}
+
 // ============================================================
 // Animation
 // ============================================================
 void GeekContextMenu::StartAnimation() {
-    // Hard cut: skip animation when UI animations are disabled
     if (!g_config.GlassUIAnimations) {
         m_animating = false;
         m_animT = 1.0f;
@@ -911,113 +1058,96 @@ void GeekContextMenu::StartAnimation() {
 void GeekContextMenu::TickAnimation() {
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - m_animStart).count();
-    m_animT = (float)elapsed / ANIM_MS;
+    m_animT = static_cast<float>(elapsed) / ANIM_MS;
     if (m_animT >= 1.0f) {
         m_animT = 1.0f;
         m_animating = false;
         KillTimer(m_hwnd, TIMER_ANIM);
     }
-
-    // Update the window via the unified render path
     RenderAndUI();
 }
 
+// ============================================================
+// Unified render path (DComp surface + DWM backdrop underneath)
+// ============================================================
 void GeekContextMenu::RenderAndUI() {
-  if (!m_rt || !m_hwnd)
-    return;
+    if (!m_d2dContext || !m_hwnd || !m_dcompSurface || !m_dcompDevice)
+        return;
 
-  RECT rc;
-  GetClientRect(m_hwnd, &rc);
-  int width = rc.right - rc.left;
-  int height = rc.bottom - rc.top;
-  if (width <= 0 || height <= 0)
-    return;
+    RECT rc;
+    GetClientRect(m_hwnd, &rc);
+    int width = rc.right - rc.left;
+    int height = rc.bottom - rc.top;
+    if (width <= 0 || height <= 0)
+        return;
 
-  // 1. Prepare Memory DC and 32-bit DIB Section
-  BITMAPINFO bmi = {};
-  bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-  bmi.bmiHeader.biWidth = width;
-  bmi.bmiHeader.biHeight = -height; // Top-down
-  bmi.bmiHeader.biPlanes = 1;
-  bmi.bmiHeader.biBitCount = 32;
-  bmi.bmiHeader.biCompression = BI_RGB;
+    float easeT = 1.0f;
+    if (m_animating) {
+        easeT = 1.0f - std::pow(1.0f - m_animT, 3.0f);
+    }
 
-  void *pBits = nullptr;
-  HDC hdcScreen = GetDC(nullptr);
-  HBITMAP hBitmap =
-      CreateDIBSection(hdcScreen, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
-  HDC hdcMem = CreateCompatibleDC(hdcScreen);
-  HGDIOBJ oldBitmap = SelectObject(hdcMem, hBitmap);
-  ReleaseDC(nullptr, hdcScreen);
+    // Slide-up without activating.
+    int offsetY = static_cast<int>(10.0f * (1.0f - easeT));
+    SetWindowPos(m_hwnd, nullptr, m_targetX, m_targetY + offsetY, 0, 0,
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOOWNERZORDER);
 
-  // 2. Bind DCRenderTarget and Begin Draw
-  m_rt->BindDC(hdcMem, &rc);
-  m_rt->SetDpi(96.0f * m_scale, 96.0f * m_scale);
-  m_rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-
-  m_rt->BeginDraw();
-  m_rt->Clear(D2D1::ColorF(0, 0, 0, 0.0f));
-
-
-  // 3. Render Geek Glass Panel (Track B: DWM-based blur)
-  auto config = QuickView::UI::GeekGlass::GetGlobalThemeConfig();
-  
-  // Independent Transparency Matrix: Separating Menus from Modals/Dialogs
-  config.opacity = g_config.GlassMenusOpacity / 100.0f;
-  
-  config.panelBounds =
-      D2D1::RectF(0, 0, (float)width / m_scale, (float)height / m_scale);
-  config.cornerRadius = g_config.RoundedCorners ? CORNER_R : 0.0f;
-  config.track = QuickView::UI::GeekGlass::RenderTrack::TrackB_DWM;
-
-    m_glassEngine.DrawGeekGlassPanel(m_rt.Get(), config);
-
-    // [Material Booster] Ensure menu responds to transparency matrix solidity
-    // This allows the menu to reach 100% solid material when the slider is at 100.
-    {
-        ComPtr<ID2D1SolidColorBrush> fillerBrush;
-        D2D1_COLOR_F fillerColor = m_isLight ? D2D1::ColorF(0.95f, 0.95f, 0.97f) : D2D1::ColorF(0.08f, 0.08f, 0.10f);
-        m_rt->CreateSolidColorBrush(D2D1::ColorF(fillerColor.r, fillerColor.g, fillerColor.b, config.opacity), &fillerBrush);
-        if (fillerBrush) {
-            D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(config.panelBounds, g_config.RoundedCorners ? CORNER_R : 0.0f, g_config.RoundedCorners ? CORNER_R : 0.0f);
-            m_rt->FillRoundedRectangle(rr, fillerBrush.Get());
+    if (m_dcompVisual) {
+        ComPtr<IDCompositionVisual3> v3;
+        if (SUCCEEDED(m_dcompVisual.As(&v3))) {
+            v3->SetOpacity(easeT);
         }
     }
 
-    // 4. Render Menu Content (Syncing detail brushes with master opacity for
-    // consistency) [UI Fix] Capsules and Separators are decoupled from density
-    // to ensure visibility at low settings
+    ComPtr<IDXGISurface> dxgiSurface;
+    POINT offset = {};
+    HRESULT hr = m_dcompSurface->BeginDraw(nullptr, IID_PPV_ARGS(&dxgiSurface), &offset);
+    if (FAILED(hr)) return;
+
+    ComPtr<ID2D1Bitmap1> targetBitmap;
+    auto bitmapProps = D2D1::BitmapProperties1(
+        D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+    hr = m_d2dContext->CreateBitmapFromDxgiSurface(dxgiSurface.Get(), &bitmapProps, &targetBitmap);
+    if (FAILED(hr)) {
+        m_dcompSurface->EndDraw();
+        return;
+    }
+
+    // BeginDraw offset is in pixels; our context is DIP-scaled → convert.
+    const float dipOx = static_cast<float>(offset.x) / m_scale;
+    const float dipOy = static_cast<float>(offset.y) / m_scale;
+    const float dipW = static_cast<float>(width) / m_scale;
+    const float dipH = static_cast<float>(height) / m_scale;
+
+    m_d2dContext->SetTarget(targetBitmap.Get());
+    m_d2dContext->BeginDraw();
+    m_d2dContext->SetTransform(D2D1::Matrix3x2F::Translation(dipOx, dipOy));
+    // Fully transparent clear so DWM Mica/Acrylic shows through.
+    m_d2dContext->Clear(D2D1::ColorF(0, 0, 0, 0.0f));
+
+    auto config = QuickView::UI::GeekGlass::GetGlobalThemeConfig();
+    // Density slider → master opacity of the tint film over the system backdrop.
+    // When using Mica or Mica Alt (MenuBackdropStyle != 0), tint film opacity is forced to 0.
+    config.opacity = (g_config.MenuBackdropStyle != 0) ? 0.0f : std::clamp(g_config.GlassMenusOpacity / 100.0f, 0.0f, 1.0f);
+    config.panelBounds = D2D1::RectF(0, 0, dipW, dipH);
+    config.cornerRadius = g_config.RoundedCorners ? CORNER_R : 0.0f;
+    config.track = QuickView::UI::GeekGlass::RenderTrack::TrackB_DWM;
+
+    m_glassEngine.DrawGeekGlassPanel(m_d2dContext.Get(), config);
+
     if (m_bevelLightBrush) m_bevelLightBrush->SetOpacity(config.opacity);
     if (m_bevelDarkBrush) m_bevelDarkBrush->SetOpacity(config.opacity);
-    
+
     RenderCapsule();
     RenderActionRow();
     RenderItems();
     RenderBevel();
 
+    m_d2dContext->EndDraw();
+    m_d2dContext->SetTarget(nullptr);
 
-  m_rt->EndDraw();
-
-  // 5. Update Window Position and Alpha via UpdateLayeredWindow
-  float easeT = 1.0f;
-  if (m_animating) {
-    easeT = 1.0f - std::pow(1.0f - m_animT, 3.0f);
-  }
-
-  BLENDFUNCTION blend = {AC_SRC_OVER, 0, (BYTE)(255 * easeT), AC_SRC_ALPHA};
-  POINT ptSrc = {0, 0};
-  SIZE sizeWin = {width, height};
-
-  int offsetY = (int)(10.0f * (1.0f - easeT));
-  POINT ptDst = {m_targetX, m_targetY + offsetY};
-
-  UpdateLayeredWindow(m_hwnd, nullptr, &ptDst, &sizeWin, hdcMem, &ptSrc, 0,
-                      &blend, ULW_ALPHA);
-
-  // 6. Cleanup
-  SelectObject(hdcMem, oldBitmap);
-  DeleteDC(hdcMem);
-  DeleteObject(hBitmap);
+    m_dcompSurface->EndDraw();
+    m_dcompDevice->Commit();
 }
 
 } // namespace QuickView::UI::Menu

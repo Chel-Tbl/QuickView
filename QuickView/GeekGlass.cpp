@@ -387,9 +387,19 @@ void GeekGlassEngine::DrawGeekGlassPanel(ID2D1RenderTarget* pRT, const GeekGlass
         ComPtr<ID2D1SolidColorBrush> grain;
         pRT->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 0.012f * config.opacity), &grain);
         pRT->FillRoundedRectangle(roundedRect, grain.Get());
+    } else if (config.track == RenderTrack::TrackB_DWM) {
+        // Track B: system DWM backdrop (Mica / Mica Alt / Acrylic) supplies the blur.
+        // Only paint a light tint film so the backdrop remains visible. Never use the
+        // heavy Track-A flicker fallback here — that occludes Mica entirely.
+        if (m_baseTintBrush) {
+            pRT->FillRoundedRectangle(roundedRect, m_baseTintBrush.Get());
+        }
+        ComPtr<ID2D1SolidColorBrush> grain;
+        pRT->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 0.012f * config.opacity), &grain);
+        if (grain) pRT->FillRoundedRectangle(roundedRect, grain.Get());
     } else {
-        // [Flicker Fallback] If blur capture fails, significantly increase tint opacity 
-        // to hide the unblurred background 'flash'.
+        // [Flicker Fallback] Track A without a background capture — raise tint so the
+        // unblurred host content does not flash through the panel.
         if (m_baseTintBrush) {
             float fallbackAlpha = 0.35f + (config.opacity * 0.45f);
             m_baseTintBrush->SetOpacity(fallbackAlpha);
