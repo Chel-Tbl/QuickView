@@ -5691,19 +5691,15 @@ void UIRenderer::DrawNavigator(ID2D1DeviceContext* dc) {
         );
         dc->PushLayer(layerParams, clipLayer.Get());
         
-        float minimapFitScale = minimapW / orientedSize.width;
+        MinimapGeometry geo = CalculateMinimapGeometry(minimap.innerRect, orientedSize);
         float minimapCenterX = (minimap.innerRect.left + minimap.innerRect.right) * 0.5f;
         float minimapCenterY = (minimap.innerRect.top + minimap.innerRect.bottom) * 0.5f;
         
         if (pane.resource.isSvg && pane.resource.svgDoc) {
             ComPtr<ID2D1DeviceContext5> ctx5;
             if (SUCCEEDED(dc->QueryInterface(IID_PPV_ARGS(&ctx5)))) {
-                const float drawW = pane.resource.GetSize().width * minimapFitScale;
-                const float drawH = pane.resource.GetSize().height * minimapFitScale;
-                const float x = minimapCenterX - drawW * 0.5f;
-                const float y = minimapCenterY - drawH * 0.5f;
-                D2D1::Matrix3x2F m = D2D1::Matrix3x2F::Scale(minimapFitScale, minimapFitScale) *
-                                     D2D1::Matrix3x2F::Translation(x, y);
+                D2D1::Matrix3x2F m = D2D1::Matrix3x2F::Scale(geo.fitScale, geo.fitScale) *
+                                     D2D1::Matrix3x2F::Translation(geo.imgDrawX, geo.imgDrawY);
                 ctx5->SetTransform(m * oldTransform);
                 ctx5->DrawSvgDocument(pane.resource.svgDoc.Get());
                 ctx5->SetTransform(oldTransform);
@@ -5716,11 +5712,7 @@ void UIRenderer::DrawNavigator(ID2D1DeviceContext* dc) {
             D2D1_INTERPOLATION_MODE interpMode = D2D1_INTERPOLATION_MODE_LINEAR;
             
             if (!rotated) {
-                const float drawW = imgW * minimapFitScale;
-                const float drawH = imgH * minimapFitScale;
-                const float x = minimapCenterX - drawW * 0.5f;
-                const float y = minimapCenterY - drawH * 0.5f;
-                D2D1_RECT_F dest = D2D1::RectF(x, y, x + drawW, y + drawH);
+                D2D1_RECT_F dest = D2D1::RectF(geo.imgDrawX, geo.imgDrawY, geo.imgDrawX + geo.drawW, geo.imgDrawY + geo.drawH);
                 dc->DrawBitmap(pane.resource.bitmap.Get(), &dest, 1.0f, interpMode);
             } else {
                 D2D1::Matrix3x2F m = D2D1::Matrix3x2F::Translation(-imgW * 0.5f, -imgH * 0.5f);
@@ -5734,7 +5726,7 @@ void UIRenderer::DrawNavigator(ID2D1DeviceContext* dc) {
                     case 8: m = m * D2D1::Matrix3x2F::Rotation(270.0f); break;
                     default: break;
                 }
-                m = m * D2D1::Matrix3x2F::Scale(minimapFitScale, minimapFitScale);
+                m = m * D2D1::Matrix3x2F::Scale(geo.fitScale, geo.fitScale);
                 m = m * D2D1::Matrix3x2F::Translation(minimapCenterX, minimapCenterY);
                 dc->SetTransform(m * oldTransform);
                 D2D1_RECT_F src = D2D1::RectF(0.0f, 0.0f, imgW, imgH);
@@ -5743,16 +5735,16 @@ void UIRenderer::DrawNavigator(ID2D1DeviceContext* dc) {
             }
         }
         
-        float vpLeft = orientedSize.width * 0.5f - pane.view.PanX / totalScale;
-        float vpTop = orientedSize.height * 0.5f - pane.view.PanY / totalScale;
+        float vpCenterX = orientedSize.width * 0.5f - pane.view.PanX / totalScale;
+        float vpCenterY = orientedSize.height * 0.5f - pane.view.PanY / totalScale;
         float vpWInImg = vpW / totalScale;
         float vpHInImg = vpH / totalScale;
         
         D2D1_RECT_F viewRect = D2D1::RectF(
-            minimap.innerRect.left + (vpLeft - vpWInImg * 0.5f) * minimapFitScale,
-            minimap.innerRect.top + (vpTop - vpHInImg * 0.5f) * minimapFitScale,
-            minimap.innerRect.left + (vpLeft + vpWInImg * 0.5f) * minimapFitScale,
-            minimap.innerRect.top + (vpTop + vpHInImg * 0.5f) * minimapFitScale
+            geo.imgDrawX + (vpCenterX - vpWInImg * 0.5f) * geo.fitScale,
+            geo.imgDrawY + (vpCenterY - vpHInImg * 0.5f) * geo.fitScale,
+            geo.imgDrawX + (vpCenterX + vpWInImg * 0.5f) * geo.fitScale,
+            geo.imgDrawY + (vpCenterY + vpHInImg * 0.5f) * geo.fitScale
         );
         
         ComPtr<ID2D1SolidColorBrush> viewRectBgBrush;

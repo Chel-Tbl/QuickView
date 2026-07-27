@@ -164,6 +164,39 @@ struct MinimapState {
     }
 };
 
+struct MinimapGeometry {
+    float fitScale = 1.0f;
+    float drawW = 0.0f;
+    float drawH = 0.0f;
+    float imgDrawX = 0.0f;
+    float imgDrawY = 0.0f;
+};
+
+// Calculate isotropic scaling and centered drawing bounds for the thumbnail inside minimap container.
+inline MinimapGeometry CalculateMinimapGeometry(D2D1_RECT_F innerRect, D2D1_SIZE_F orientedSize) {
+    MinimapGeometry geo;
+    if (orientedSize.width <= 0.0f || orientedSize.height <= 0.0f) return geo;
+
+    const float minimapW = innerRect.right - innerRect.left;
+    const float minimapH = innerRect.bottom - innerRect.top;
+    if (minimapW <= 0.0f || minimapH <= 0.0f) return geo;
+
+    const float scaleX = minimapW / orientedSize.width;
+    const float scaleY = minimapH / orientedSize.height;
+    geo.fitScale = (std::min)(scaleX, scaleY);
+
+    geo.drawW = orientedSize.width * geo.fitScale;
+    geo.drawH = orientedSize.height * geo.fitScale;
+
+    const float centerX = (innerRect.left + innerRect.right) * 0.5f;
+    const float centerY = (innerRect.top + innerRect.bottom) * 0.5f;
+    geo.imgDrawX = centerX - geo.drawW * 0.5f;
+    geo.imgDrawY = centerY - geo.drawH * 0.5f;
+
+    return geo;
+}
+
+
 // --- Global App Context ---
 // Using a Singleton for stage 1 refactoring, easy to migrate to DI later.
 #include <memory>

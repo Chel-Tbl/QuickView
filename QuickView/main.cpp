@@ -6769,13 +6769,14 @@ static void UpdatePanFromMinimapClick(int idx, POINT pt, HWND hwnd) {
     const float clampedZoom = (std::max)(0.02f, pane.view.Zoom);
     const float totalScale = fitScale * clampedZoom;
     
-    float minimapFitScale = (minimap.innerRect.right - minimap.innerRect.left) / orientedSize.width;
+    MinimapGeometry geo = CalculateMinimapGeometry(minimap.innerRect, orientedSize);
+    if (geo.fitScale <= 0.0f) return;
     
-    float relX = (float)pt.x - minimap.innerRect.left;
-    float relY = (float)pt.y - minimap.innerRect.top;
+    float relX = (float)pt.x - geo.imgDrawX;
+    float relY = (float)pt.y - geo.imgDrawY;
     
-    float imgX = relX / minimapFitScale;
-    float imgY = relY / minimapFitScale;
+    float imgX = relX / geo.fitScale;
+    float imgY = relY / geo.fitScale;
     
     float newPanX = (orientedSize.width * 0.5f - imgX) * totalScale;
     float newPanY = (orientedSize.height * 0.5f - imgY) * totalScale;
