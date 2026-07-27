@@ -427,6 +427,7 @@ const wchar_t *Settings_Option_Black = nullptr;
 const wchar_t *Settings_Option_Effects = nullptr;
 const wchar_t *Settings_Label_ContextMenuBackdrop = nullptr;
 const wchar_t *Settings_Label_CanvasEffectStyle = nullptr;
+const wchar_t *Settings_Tooltip_BackdropEffectsTip = nullptr;
 const wchar_t *Settings_Option_White = nullptr;
 const wchar_t *Settings_Option_Grid = nullptr;
 const wchar_t *Settings_Option_Custom = nullptr;
@@ -954,6 +955,7 @@ struct LanguageTable {
     const wchar_t *Settings_Option_Effects;
     const wchar_t *Settings_Label_ContextMenuBackdrop;
     const wchar_t *Settings_Label_CanvasEffectStyle;
+    const wchar_t *Settings_Tooltip_BackdropEffectsTip;
     const wchar_t *Settings_Option_White;
     const wchar_t *Settings_Option_Grid;
     const wchar_t *Settings_Option_Custom;
@@ -1484,6 +1486,7 @@ static const LanguageTable Table_EN = {
     L"Effects", // Settings_Option_Effects
     L"Right-Click Menu", // Settings_Label_ContextMenuBackdrop
     L"Effect Style", // Settings_Label_CanvasEffectStyle
+    L"Mica and Mica Alt are supported only on Windows 11. Acrylic uses more system resources than Mica/Mica Alt.", // Settings_Tooltip_BackdropEffectsTip
     L"White", // Settings_Option_White
     L"Grid", // Settings_Option_Grid
     L"Custom", // Settings_Option_Custom
@@ -2014,6 +2017,7 @@ static const LanguageTable Table_CN = {
     L"特效", // Settings_Option_Effects
     L"右键菜单", // Settings_Label_ContextMenuBackdrop
     L"特效类型", // Settings_Label_CanvasEffectStyle
+    L"Mica 与 Mica Alt 特效仅在 Windows 11 上支持；Acrylic（亚克力）相比 Mica/Mica Alt 会占用更多系统资源。", // Settings_Tooltip_BackdropEffectsTip
     L"白色", // Settings_Option_White
     L"网格", // Settings_Option_Grid
     L"自定义", // Settings_Option_Custom
@@ -2544,6 +2548,7 @@ static const LanguageTable Table_TW = {
     L"特效", // Settings_Option_Effects
     L"右鍵菜單", // Settings_Label_ContextMenuBackdrop
     L"特效類型", // Settings_Label_CanvasEffectStyle
+    L"Mica 與 Mica Alt 特效僅在 Windows 11 上支援；Acrylic（亞克力）相比 Mica/Mica Alt 會佔用更多系統資源。", // Settings_Tooltip_BackdropEffectsTip
     L"白色", // Settings_Option_White
     L"網格", // Settings_Option_Grid
     L"自訂", // Settings_Option_Custom
@@ -3074,6 +3079,7 @@ static const LanguageTable Table_JA = {
     L"エフェクト", // Settings_Option_Effects
     L"右クリックメニュー", // Settings_Label_ContextMenuBackdrop
     L"エフェクトスタイル", // Settings_Label_CanvasEffectStyle
+    L"Mica と Mica Alt エフェクトは Windows 11 のみ対応。Acrylic は Mica/Mica Alt よりリソースを多く消費します。", // Settings_Tooltip_BackdropEffectsTip
     L"ホワイト", // Settings_Option_White
     L"グリッド", // Settings_Option_Grid
     L"カスタム", // Settings_Option_Custom
@@ -3604,6 +3610,7 @@ static const LanguageTable Table_RU = {
     L"Эффекты", // Settings_Option_Effects
     L"Контекстное меню", // Settings_Label_ContextMenuBackdrop
     L"Стиль эффекта", // Settings_Label_CanvasEffectStyle
+    L"Эффекты Mica и Mica Alt поддерживаются только в Windows 11. Acrylic использует больше системных ресурсов.", // Settings_Tooltip_BackdropEffectsTip
     L"Белый", // Settings_Option_White
     L"Сетка", // Settings_Option_Grid
     L"Свой", // Settings_Option_Custom
@@ -4134,6 +4141,7 @@ static const LanguageTable Table_DE = {
     L"Effekte", // Settings_Option_Effects
     L"Kontextmenü", // Settings_Label_ContextMenuBackdrop
     L"Effekt-Stil", // Settings_Label_CanvasEffectStyle
+    L"Mica und Mica Alt werden nur unter Windows 11 unterstützt. Acrylic verbraucht mehr Systemressourcen als Mica/Mica Alt.", // Settings_Tooltip_BackdropEffectsTip
     L"Weiß", // Settings_Option_White
     L"Raster", // Settings_Option_Grid
     L"Benutzerdefiniert", // Settings_Option_Custom
@@ -4664,6 +4672,7 @@ static const LanguageTable Table_ES = {
     L"Efectos", // Settings_Option_Effects
     L"Menú contextual", // Settings_Label_ContextMenuBackdrop
     L"Estilo de efecto", // Settings_Label_CanvasEffectStyle
+    L"Mica y Mica Alt solo se admiten en Windows 11. El efecto Acrylic consume más recursos del sistema que Mica/Mica Alt.", // Settings_Tooltip_BackdropEffectsTip
     L"Blanco", // Settings_Option_White
     L"Cuadrícula", // Settings_Option_Grid
     L"Personalizado", // Settings_Option_Custom
@@ -5194,6 +5203,7 @@ static const LanguageTable Table_FR = {
     L"Effects", // Settings_Option_Effects
     L"Right-Click Menu", // Settings_Label_ContextMenuBackdrop
     L"Effect Style", // Settings_Label_CanvasEffectStyle
+    L"Mica and Mica Alt are supported only on Windows 11. Acrylic uses more system resources than Mica/Mica Alt.", // Settings_Tooltip_BackdropEffectsTip
     L"White", // Settings_Option_White
     L"Grid", // Settings_Option_Grid
     L"Custom", // Settings_Option_Custom
@@ -5728,6 +5738,7 @@ void Apply(const LanguageTable& t) {
   Settings_Option_Effects = t.Settings_Option_Effects;
   Settings_Label_ContextMenuBackdrop = t.Settings_Label_ContextMenuBackdrop;
   Settings_Label_CanvasEffectStyle = t.Settings_Label_CanvasEffectStyle;
+  Settings_Tooltip_BackdropEffectsTip = t.Settings_Tooltip_BackdropEffectsTip;
   Settings_Option_White = t.Settings_Option_White;
   Settings_Option_Grid = t.Settings_Option_Grid;
   Settings_Option_Custom = t.Settings_Option_Custom;

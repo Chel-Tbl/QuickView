@@ -1283,9 +1283,19 @@ void SettingsOverlay::BuildMenu() {
 
     SettingsItem itemContextMenuBackdrop = { AppStrings::Settings_Label_ContextMenuBackdrop, OptionType::Segment, nullptr, nullptr, BindEnum(&g_config.MenuBackdropStyle), nullptr, 0, 0, {L"Acrylic", L"Mica", L"Mica Alt"} };
     itemContextMenuBackdrop.isNewOption = true;
+    itemContextMenuBackdrop.tooltipText = AppStrings::Settings_Tooltip_BackdropEffectsTip;
     itemContextMenuBackdrop.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) {
         if (g_config.MenuBackdropStyle != 0) { // 1=Mica, 2=Mica Alt
+            if (g_config.GlassMenusOpacity > 0.0f) {
+                g_config.GlassMenusOpacityBackup = g_config.GlassMenusOpacity;
+            }
             g_config.GlassMenusOpacity = 0.0f;
+        } else { // 0=Acrylic
+            if (g_config.GlassMenusOpacityBackup > 0.0f) {
+                g_config.GlassMenusOpacity = g_config.GlassMenusOpacityBackup;
+            } else {
+                g_config.GlassMenusOpacity = 15.0f;
+            }
         }
         SaveConfig();
         overlay->m_pendingRebuild = true;
@@ -1465,6 +1475,7 @@ void SettingsOverlay::BuildMenu() {
         // Effects mode: Show sub-segment for selecting effect (Mica, Mica Alt, Acrylic)
         SettingsItem itemCanvasEffectStyle = { AppStrings::Settings_Label_CanvasEffectStyle, OptionType::Segment, nullptr, nullptr, BindEnum(&g_config.CanvasEffectStyle), nullptr, 0, 0, {L"Mica", L"Mica Alt", L"Acrylic"} };
         itemCanvasEffectStyle.isNewOption = true;
+        itemCanvasEffectStyle.tooltipText = AppStrings::Settings_Tooltip_BackdropEffectsTip;
         itemCanvasEffectStyle.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) {
             ApplyWindowTheme(overlay->m_hwnd);
         };
@@ -1492,8 +1503,8 @@ void SettingsOverlay::BuildMenu() {
             }
         };
         tabVisuals.items.push_back(itemRow);
-    } else {
-        // Standard Mode: Just Grid Toggle
+    } else if (g_config.CanvasColor != 2) {
+        // Black (0) & White (1) Mode: Show Grid Toggle (Hidden for Grid (2) mode)
         tabVisuals.items.push_back({ AppStrings::Settings_Label_ShowGrid, OptionType::Toggle, &g_config.CanvasShowGrid });
     }
 
@@ -3706,7 +3717,7 @@ void SettingsOverlay::Render(ID2D1DeviceContext* pRT, float winW, float winH) {
                          float labelLeft = controlRect.left + toggleW + 8.0f * s;
                          float labelRight = controlRect.left + 135.0f * s;
                          D2D1_RECT_F gridLabelRect = D2D1::RectF(labelLeft, controlRect.top, labelRight, controlRect.bottom);
-                         pRT->DrawText(L"Show Grid", 9, m_textFormatItem.Get(), gridLabelRect, m_brushTextDim.Get(), D2D1_DRAW_TEXT_OPTIONS_NONE); 
+                         pRT->DrawText(AppStrings::Settings_Label_ShowGrid, (UINT32)wcslen(AppStrings::Settings_Label_ShowGrid), m_textFormatItem.Get(), gridLabelRect, m_brushTextDim.Get(), D2D1_DRAW_TEXT_OPTIONS_NONE); 
                          btnLeft = controlRect.left + 140.0f * s;
                      }
                      

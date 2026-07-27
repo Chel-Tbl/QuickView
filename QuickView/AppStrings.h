@@ -302,6 +302,7 @@ namespace AppStrings {
     extern const wchar_t* Settings_Option_Effects;
     extern const wchar_t* Settings_Label_ContextMenuBackdrop;
     extern const wchar_t* Settings_Label_CanvasEffectStyle;
+    extern const wchar_t* Settings_Tooltip_BackdropEffectsTip;
     extern const wchar_t* Settings_Label_Overlay;
     extern const wchar_t* Settings_Label_ShowGrid;
     extern const wchar_t* Settings_Label_CrossFade;

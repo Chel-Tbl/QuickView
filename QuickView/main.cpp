@@ -1890,7 +1890,8 @@ static void EnterOverlayMode(HWND hwnd) {
                                    D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f), false);
     g_compEngine->Commit();
 
-    // Disable DWM frame extension in overlay mode to eliminate the system background color
+    // Disable DWM system backdrop and frame extension in overlay mode to eliminate system background color
+    ApplyWindowTheme(hwnd);
     MARGINS margins = { 0, 0, 0, 0 };
     DwmExtendFrameIntoClientArea(hwnd, &margins);
 
@@ -1935,7 +1936,8 @@ static void ExitOverlayMode(HWND hwnd) {
 
     g_runtime.OverlayModeState = OverlayState::Normal;
 
-    // Restore DWM frame extension for drop shadow
+    // Restore DWM system backdrop and frame extension for drop shadow
+    ApplyWindowTheme(hwnd);
     MARGINS margins = { 0, 0, 0, 1 };
     DwmExtendFrameIntoClientArea(hwnd, &margins);
 
@@ -4082,7 +4084,8 @@ void ApplyWindowTheme(HWND hwnd) {
 #endif
 
     // DWM_SYSTEMBACKDROP_TYPE: 2=Mica, 3=Acrylic (Transient), 4=Mica Alt (Tabbed)
-    if (g_config.CanvasColor == 4) {
+    // In Overlay (Tracing) mode, backdrop must be disabled so window is 100% transparent to desktop
+    if (!IsOverlayModeActive() && g_config.CanvasColor == 4) {
         int backdropType = DWMSBT_DISABLE;
         if (g_config.CanvasEffectStyle == 0) backdropType = DWMSBT_MAINWINDOW;      // Mica
         else if (g_config.CanvasEffectStyle == 1) backdropType = DWMSBT_TABBEDWINDOW; // Mica Alt
@@ -5561,9 +5564,11 @@ static D2D1_COLOR_F ResolveCanvasColor() {
         case 1: return D2D1::ColorF(0.95f, 0.95f, 0.95f); // White
         case 2: return D2D1::ColorF(0.18f, 0.18f, 0.18f); // Grid
         case 3: return D2D1::ColorF(g_config.CanvasCustomR, g_config.CanvasCustomG, g_config.CanvasCustomB);
-        case 4: // Mica
-        case 5: // Mica Alt
-        case 6: return D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f); // Acrylic (Transparent)
+        case 4: 
+            if (!SystemInfo::IsWindows11OrGreater()) {
+                return D2D1::ColorF(0.18f, 0.18f, 0.18f); // Windows 10 fallback to standard dark background
+            }
+            return D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f); // Effects (Transparent for DWM backdrop on Win11)
         default: return D2D1::ColorF(0.18f, 0.18f, 0.18f);
     }
 }
