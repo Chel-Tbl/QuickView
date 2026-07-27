@@ -309,6 +309,7 @@ const wchar_t *Settings_Label_WindowMaxSizePercent = nullptr;
 const wchar_t *Settings_Label_ShowBorderIndicator = nullptr;
 const wchar_t *Settings_Tooltip_ShowBorderIndicator = nullptr;
 const wchar_t *Settings_Label_ShowNavigator = nullptr;
+const wchar_t *Settings_Tooltip_ShowNavigator = nullptr;
 const wchar_t *Settings_Option_NavigatorAuto = nullptr;
 const wchar_t *Settings_Option_NavigatorOn = nullptr;
 const wchar_t *Settings_Option_NavigatorOff = nullptr;
@@ -328,7 +329,20 @@ const wchar_t *Settings_Label_MouseAnchorZoom = nullptr;
 const wchar_t *Settings_Label_RightButtonDragZoom = nullptr;
 const wchar_t *Settings_Label_WheelZoomSpeed = nullptr;
 const wchar_t *Settings_Label_ThumbWheel = nullptr;
+const wchar_t *Settings_Tooltip_ThumbWheel = nullptr;
+const wchar_t *Settings_Tooltip_MiddleDrag = nullptr;
+const wchar_t *Settings_Label_DoubleClick = nullptr;
+const wchar_t *Settings_Option_DoubleClick_Smart = nullptr;
+const wchar_t *Settings_Option_DoubleClick_WheelMode1 = nullptr;
+const wchar_t *Settings_Option_DoubleClick_WheelMode2 = nullptr;
+const wchar_t *Settings_Tooltip_DoubleClick = nullptr;
+const wchar_t *Settings_Tooltip_PanStepNormal = nullptr;
+const wchar_t *OSD_WheelMode1_NextPrevZoom = nullptr;
+const wchar_t *OSD_WheelMode1_ZoomNextPrev = nullptr;
+const wchar_t *OSD_WheelMode2_Pan = nullptr;
+const wchar_t *OSD_WheelMode2_Default = nullptr;
 const wchar_t *Settings_Label_RightDragZoomSpeed = nullptr;
+const wchar_t *Settings_Tooltip_WheelZoomSpeed = nullptr;
 const wchar_t *OSD_WheelZoomSpeed = nullptr;
 const wchar_t *Help_Action_AdjustZoomSpeed = nullptr;
 const wchar_t *Help_Action_LockWindowZoom = nullptr;
@@ -840,6 +854,7 @@ struct LanguageTable {
     const wchar_t *Settings_Label_ShowBorderIndicator;
     const wchar_t *Settings_Tooltip_ShowBorderIndicator;
     const wchar_t *Settings_Label_ShowNavigator;
+    const wchar_t *Settings_Tooltip_ShowNavigator;
     const wchar_t *Settings_Option_NavigatorAuto;
     const wchar_t *Settings_Option_NavigatorOn;
     const wchar_t *Settings_Option_NavigatorOff;
@@ -859,6 +874,19 @@ struct LanguageTable {
     const wchar_t *Settings_Label_RightButtonDragZoom;
     const wchar_t *Settings_Label_WheelZoomSpeed;
     const wchar_t *Settings_Label_ThumbWheel;
+    const wchar_t *Settings_Tooltip_ThumbWheel;
+    const wchar_t *Settings_Tooltip_WheelZoomSpeed;
+    const wchar_t *Settings_Tooltip_MiddleDrag;
+    const wchar_t *Settings_Label_DoubleClick;
+    const wchar_t *Settings_Option_DoubleClick_Smart;
+    const wchar_t *Settings_Option_DoubleClick_WheelMode1;
+    const wchar_t *Settings_Option_DoubleClick_WheelMode2;
+    const wchar_t *Settings_Tooltip_DoubleClick;
+    const wchar_t *Settings_Tooltip_PanStepNormal;
+    const wchar_t *OSD_WheelMode1_NextPrevZoom;
+    const wchar_t *OSD_WheelMode1_ZoomNextPrev;
+    const wchar_t *OSD_WheelMode2_Pan;
+    const wchar_t *OSD_WheelMode2_Default;
     const wchar_t *Settings_Label_RightDragZoomSpeed;
     const wchar_t *OSD_WheelZoomSpeed;
     const wchar_t *Help_Action_AdjustZoomSpeed;
@@ -1371,6 +1399,7 @@ static const LanguageTable Table_EN = {
     L"Show Edge Overflow Indicators", // Settings_Label_ShowBorderIndicator
     L"Shows an indicator line in the direction where the image exceeds the window borders.", // Settings_Tooltip_ShowBorderIndicator
     L"Show Minimap", // Settings_Label_ShowNavigator
+    L"When mouse is over minimap, Wheel / Thumb Wheel (Shift + Wheel) pans image", // Settings_Tooltip_ShowNavigator
     L"Auto", // Settings_Option_NavigatorAuto
     L"On", // Settings_Option_NavigatorOn
     L"Off", // Settings_Option_NavigatorOff
@@ -1390,6 +1419,19 @@ static const LanguageTable Table_EN = {
     L"Right Button Drag Zoom", // Settings_Label_RightButtonDragZoom
     L"Wheel Zoom Speed", // Settings_Label_WheelZoomSpeed
     L"Thumb Wheel", // Settings_Label_ThumbWheel
+    L"Can be replaced with Shift + Wheel", // Settings_Tooltip_ThumbWheel
+    L"Alt + Wheel temporarily adjusts zoom speed", // Settings_Tooltip_WheelZoomSpeed
+    L"Can be replaced with Ctrl + Left Click", // Settings_Tooltip_MiddleDrag
+    L"Double-Click", // Settings_Label_DoubleClick
+    L"Smart", // Settings_Option_DoubleClick_Smart
+    L"Wheel Mode 1", // Settings_Option_DoubleClick_WheelMode1
+    L"Wheel Mode 2", // Settings_Option_DoubleClick_WheelMode2
+    L"Smart: Automatically cycles between Fit Screen / 100% / Initial Size;\nWheel Mode 1: Double-click swaps main & thumb wheel functions;\nWheel Mode 2: Double-click toggles image pan mode;\nTip: Shift + Wheel acts as Thumb Wheel.", // Settings_Tooltip_DoubleClick
+    L"Controls key pan and wheel pan speed", // Settings_Tooltip_PanStepNormal
+    L"Main Wheel: Next/Prev; Thumb/Shift+Wheel: Zoom", // OSD_WheelMode1_NextPrevZoom
+    L"Main Wheel: Zoom; Thumb/Shift+Wheel: Next/Prev", // OSD_WheelMode1_ZoomNextPrev
+    L"Wheel: Pan Mode", // OSD_WheelMode2_Pan
+    L"Wheel: Default Mode", // OSD_WheelMode2_Default
     L"Right Drag Zoom Speed", // Settings_Label_RightDragZoomSpeed
     L"Zoom Speed (Temp): ", // OSD_WheelZoomSpeed
     L"Temporarily Adjust Zoom Speed", // Help_Action_AdjustZoomSpeed
@@ -1902,6 +1944,7 @@ static const LanguageTable Table_CN = {
     L"显示边界溢出指示器", // Settings_Label_ShowBorderIndicator
     L"在图片超出窗口边框的方向上显示提示线条。", // Settings_Tooltip_ShowBorderIndicator
     L"显示缩略导航图", // Settings_Label_ShowNavigator
+    L"鼠标位于导航图上方时，使用滚轮 / 拇指滚轮 (Shift + 滚轮) 可直接平移图片", // Settings_Tooltip_ShowNavigator
     L"自动", // Settings_Option_NavigatorAuto
     L"开启", // Settings_Option_NavigatorOn
     L"关闭", // Settings_Option_NavigatorOff
@@ -1921,6 +1964,19 @@ static const LanguageTable Table_CN = {
     L"右键拖动缩放", // Settings_Label_RightButtonDragZoom
     L"滚轮缩放速度", // Settings_Label_WheelZoomSpeed
     L"拇指滚轮", // Settings_Label_ThumbWheel
+    L"可用 Shift + 滚轮 替代", // Settings_Tooltip_ThumbWheel
+    L"Alt + 滚轮可临时调整缩放速度", // Settings_Tooltip_WheelZoomSpeed
+    L"可用 Ctrl + 左键 替代", // Settings_Tooltip_MiddleDrag
+    L"双击", // Settings_Label_DoubleClick
+    L"智能双击", // Settings_Option_DoubleClick_Smart
+    L"滚轮模式一", // Settings_Option_DoubleClick_WheelMode1
+    L"滚轮模式二", // Settings_Option_DoubleClick_WheelMode2
+    L"智能双击：自动在 适应屏幕 / 100% / 初始尺寸间切换；\n滚轮模式一：双击快速互换主滚轮与拇指滚轮功能；\n滚轮模式二：双击切换主滚轮上下平移、拇指滚轮左右平移；\n提示：Shift + 滚轮 相当于 拇指滚轮。", // Settings_Tooltip_DoubleClick
+    L"控制按键平移和滚轮平移速度", // Settings_Tooltip_PanStepNormal
+    L"主滚轮：切图；拇指滚轮/shift+滚轮：缩放", // OSD_WheelMode1_NextPrevZoom
+    L"主滚轮：缩放；拇指滚轮/shift+滚轮：切图", // OSD_WheelMode1_ZoomNextPrev
+    L"滚轮：平移模式", // OSD_WheelMode2_Pan
+    L"滚轮：默认模式", // OSD_WheelMode2_Default
     L"右键拖拽缩放速度", // Settings_Label_RightDragZoomSpeed
     L"缩放速度(临时): ", // OSD_WheelZoomSpeed
     L"临时调节缩放速度", // Help_Action_AdjustZoomSpeed
@@ -2433,6 +2489,7 @@ static const LanguageTable Table_TW = {
     L"顯示邊界溢出指示器", // Settings_Label_ShowBorderIndicator
     L"在圖片超出視窗邊框的方向上顯示提示線條。", // Settings_Tooltip_ShowBorderIndicator
     L"顯示縮略導航圖", // Settings_Label_ShowNavigator
+    L"滑鼠位於導航圖上方時，使用滾輪 / 側鍵滾輪 (Shift + 滾輪) 可直接平移圖片", // Settings_Tooltip_ShowNavigator
     L"自動", // Settings_Option_NavigatorAuto
     L"開啟", // Settings_Option_NavigatorOn
     L"關閉", // Settings_Option_NavigatorOff
@@ -2452,6 +2509,19 @@ static const LanguageTable Table_TW = {
     L"右鍵拖曳縮放", // Settings_Label_RightButtonDragZoom
     L"滾輪縮放速度", // Settings_Label_WheelZoomSpeed
     L"拇指滾輪", // Settings_Label_ThumbWheel
+    L"可用 Shift + 滾輪 替代", // Settings_Tooltip_ThumbWheel
+    L"Alt + 滾輪可臨時調整縮放速度", // Settings_Tooltip_WheelZoomSpeed
+    L"可用 Ctrl + 左鍵 替代", // Settings_Tooltip_MiddleDrag
+    L"雙擊", // Settings_Label_DoubleClick
+    L"智能雙擊", // Settings_Option_DoubleClick_Smart
+    L"滾輪模式一", // Settings_Option_DoubleClick_WheelMode1
+    L"滾輪模式二", // Settings_Option_DoubleClick_WheelMode2
+    L"智能雙擊：自動在 適應螢幕 / 100% / 初始尺寸間切換；\n滾輪模式一：雙擊快速互換主滾輪與拇指滾輪功能；\n滾輪模式二：雙擊切換主滾輪上下平移、拇指滾輪左右平移；\n提示：Shift + 滾輪 相當於 拇指滾輪。", // Settings_Tooltip_DoubleClick
+    L"控制按鍵平移和滾輪平移速度", // Settings_Tooltip_PanStepNormal
+    L"主滾輪：切圖；拇指滾輪/shift+滾輪：縮放", // OSD_WheelMode1_NextPrevZoom
+    L"主滾輪：縮放；拇指滾輪/shift+滾轮：切圖", // OSD_WheelMode1_ZoomNextPrev
+    L"滾輪：平移模式", // OSD_WheelMode2_Pan
+    L"滾輪：預設模式", // OSD_WheelMode2_Default
     L"右鍵拖曳縮放速度", // Settings_Label_RightDragZoomSpeed
     L"縮放速度(臨時): ", // OSD_WheelZoomSpeed
     L"臨時調節縮放速度", // Help_Action_AdjustZoomSpeed
@@ -2964,6 +3034,7 @@ static const LanguageTable Table_JA = {
     L"境界オーバーフローインジケーターを表示", // Settings_Label_ShowBorderIndicator
     L"画像がウィンドウ枠からはみ出している方向にインジケーター線を表示します。", // Settings_Tooltip_ShowBorderIndicator
     L"ミニマップを表示", // Settings_Label_ShowNavigator
+    L"When mouse is over minimap, Wheel / Thumb Wheel (Shift + Wheel) pans image", // Settings_Tooltip_ShowNavigator
     L"自動", // Settings_Option_NavigatorAuto
     L"オン", // Settings_Option_NavigatorOn
     L"オフ", // Settings_Option_NavigatorOff
@@ -2983,6 +3054,19 @@ static const LanguageTable Table_JA = {
     L"右ボタンドラッグでズーム", // Settings_Label_RightButtonDragZoom
     L"ホイールズーム速度", // Settings_Label_WheelZoomSpeed
     L"サムホイール", // Settings_Label_ThumbWheel
+    L"Can be replaced with Shift + Wheel", // Settings_Tooltip_ThumbWheel
+    L"Alt + Wheel temporarily adjusts zoom speed", // Settings_Tooltip_WheelZoomSpeed
+    L"Can be replaced with Ctrl + Left Click", // Settings_Tooltip_MiddleDrag
+    L"ダブルクリック", // Settings_Label_DoubleClick
+    L"スマート", // Settings_Option_DoubleClick_Smart
+    L"ホイールモード 1", // Settings_Option_DoubleClick_WheelMode1
+    L"ホイールモード 2", // Settings_Option_DoubleClick_WheelMode2
+    L"Smart: Default zoom/fullscreen toggle;\nWheel Mode 1: Double-click swaps main & thumb wheel functions;\nWheel Mode 2: Double-click toggles image pan mode;\nTip: Shift + Wheel acts as Thumb Wheel.", // Settings_Tooltip_DoubleClick
+    L"Controls key pan and wheel pan speed", // Settings_Tooltip_PanStepNormal
+    L"Main Wheel: Next/Prev; Thumb/Shift+Wheel: Zoom", // OSD_WheelMode1_NextPrevZoom
+    L"Main Wheel: Zoom; Thumb/Shift+Wheel: Next/Prev", // OSD_WheelMode1_ZoomNextPrev
+    L"Wheel: Pan Mode", // OSD_WheelMode2_Pan
+    L"Wheel: Default Mode", // OSD_WheelMode2_Default
     L"右ドラッグズーム速度", // Settings_Label_RightDragZoomSpeed
     L"ズーム速度 (一時的): ", // OSD_WheelZoomSpeed
     L"ズーム速度を一時的に調整", // Help_Action_AdjustZoomSpeed
@@ -3495,6 +3579,7 @@ static const LanguageTable Table_RU = {
     L"Показывать индикаторы переполнения границ", // Settings_Label_ShowBorderIndicator
     L"Показывает индикаторную линию в направлении, где изображение выходит за границы окна.", // Settings_Tooltip_ShowBorderIndicator
     L"Показывать мини-карту", // Settings_Label_ShowNavigator
+    L"When mouse is over minimap, Wheel / Thumb Wheel (Shift + Wheel) pans image", // Settings_Tooltip_ShowNavigator
     L"Авто", // Settings_Option_NavigatorAuto
     L"Вкл", // Settings_Option_NavigatorOn
     L"Выкл", // Settings_Option_NavigatorOff
@@ -3514,6 +3599,19 @@ static const LanguageTable Table_RU = {
     L"Масштаб правой кнопкой мыши", // Settings_Label_RightButtonDragZoom
     L"Скорость зума колёсиком", // Settings_Label_WheelZoomSpeed
     L"Боковое колёсико", // Settings_Label_ThumbWheel
+    L"Can be replaced with Shift + Wheel", // Settings_Tooltip_ThumbWheel
+    L"Alt + Wheel temporarily adjusts zoom speed", // Settings_Tooltip_WheelZoomSpeed
+    L"Can be replaced with Ctrl + Left Click", // Settings_Tooltip_MiddleDrag
+    L"Двойной клик", // Settings_Label_DoubleClick
+    L"Умный", // Settings_Option_DoubleClick_Smart
+    L"Режим колёсика 1", // Settings_Option_DoubleClick_WheelMode1
+    L"Режим колёсика 2", // Settings_Option_DoubleClick_WheelMode2
+    L"Smart: Default zoom/fullscreen toggle;\nWheel Mode 1: Double-click swaps main & thumb wheel functions;\nWheel Mode 2: Double-click toggles image pan mode;\nTip: Shift + Wheel acts as Thumb Wheel.", // Settings_Tooltip_DoubleClick
+    L"Controls key pan and wheel pan speed", // Settings_Tooltip_PanStepNormal
+    L"Main Wheel: Next/Prev; Thumb/Shift+Wheel: Zoom", // OSD_WheelMode1_NextPrevZoom
+    L"Main Wheel: Zoom; Thumb/Shift+Wheel: Next/Prev", // OSD_WheelMode1_ZoomNextPrev
+    L"Wheel: Pan Mode", // OSD_WheelMode2_Pan
+    L"Wheel: Default Mode", // OSD_WheelMode2_Default
     L"Скорость зума правой кнопкой", // Settings_Label_RightDragZoomSpeed
     L"Скорость зума (временно): ", // OSD_WheelZoomSpeed
     L"Временно настроить скорость зума", // Help_Action_AdjustZoomSpeed
@@ -4026,6 +4124,7 @@ static const LanguageTable Table_DE = {
     L"Rand-Überlauf-Indikatoren anzeigen", // Settings_Label_ShowBorderIndicator
     L"Zeigt eine Indikatorlinie in der Richtung an, in der das Bild die Fenstergrenzen überschreitet.", // Settings_Tooltip_ShowBorderIndicator
     L"Minimap anzeigen", // Settings_Label_ShowNavigator
+    L"When mouse is over minimap, Wheel / Thumb Wheel (Shift + Wheel) pans image", // Settings_Tooltip_ShowNavigator
     L"Auto", // Settings_Option_NavigatorAuto
     L"An", // Settings_Option_NavigatorOn
     L"Aus", // Settings_Option_NavigatorOff
@@ -4045,6 +4144,19 @@ static const LanguageTable Table_DE = {
     L"Zoom mit Rechtsziehen", // Settings_Label_RightButtonDragZoom
     L"Mausrad-Zoomgeschwindigkeit", // Settings_Label_WheelZoomSpeed
     L"Daumenrad", // Settings_Label_ThumbWheel
+    L"Can be replaced with Shift + Wheel", // Settings_Tooltip_ThumbWheel
+    L"Alt + Wheel temporarily adjusts zoom speed", // Settings_Tooltip_WheelZoomSpeed
+    L"Can be replaced with Ctrl + Left Click", // Settings_Tooltip_MiddleDrag
+    L"Doppelklick", // Settings_Label_DoubleClick
+    L"Smart", // Settings_Option_DoubleClick_Smart
+    L"Mausrad-Modus 1", // Settings_Option_DoubleClick_WheelMode1
+    L"Mausrad-Modus 2", // Settings_Option_DoubleClick_WheelMode2
+    L"Smart: Default zoom/fullscreen toggle;\nWheel Mode 1: Double-click swaps main & thumb wheel functions;\nWheel Mode 2: Double-click toggles image pan mode;\nTip: Shift + Wheel acts as Thumb Wheel.", // Settings_Tooltip_DoubleClick
+    L"Controls key pan and wheel pan speed", // Settings_Tooltip_PanStepNormal
+    L"Main Wheel: Next/Prev; Thumb/Shift+Wheel: Zoom", // OSD_WheelMode1_NextPrevZoom
+    L"Main Wheel: Zoom; Thumb/Shift+Wheel: Next/Prev", // OSD_WheelMode1_ZoomNextPrev
+    L"Wheel: Pan Mode", // OSD_WheelMode2_Pan
+    L"Wheel: Default Mode", // OSD_WheelMode2_Default
     L"Rechtszieh-Zoomgeschwindigkeit", // Settings_Label_RightDragZoomSpeed
     L"Zoomgeschwindigkeit (temp): ", // OSD_WheelZoomSpeed
     L"Zoomgeschwindigkeit temporär anpassen", // Help_Action_AdjustZoomSpeed
@@ -4557,6 +4669,7 @@ static const LanguageTable Table_ES = {
     L"Mostrar indicadores de desbordamiento de borde", // Settings_Label_ShowBorderIndicator
     L"Muestra una línea indicadora en la dirección donde la imagen excede los límites de la ventana.", // Settings_Tooltip_ShowBorderIndicator
     L"Mostrar minimapa", // Settings_Label_ShowNavigator
+    L"When mouse is over minimap, Wheel / Thumb Wheel (Shift + Wheel) pans image", // Settings_Tooltip_ShowNavigator
     L"Auto", // Settings_Option_NavigatorAuto
     L"Activar", // Settings_Option_NavigatorOn
     L"Desactivar", // Settings_Option_NavigatorOff
@@ -4576,6 +4689,19 @@ static const LanguageTable Table_ES = {
     L"Zoom con arrastre derecho", // Settings_Label_RightButtonDragZoom
     L"Velocidad de zoom con rueda", // Settings_Label_WheelZoomSpeed
     L"Rueda del pulgar", // Settings_Label_ThumbWheel
+    L"Can be replaced with Shift + Wheel", // Settings_Tooltip_ThumbWheel
+    L"Alt + Wheel temporarily adjusts zoom speed", // Settings_Tooltip_WheelZoomSpeed
+    L"Can be replaced with Ctrl + Left Click", // Settings_Tooltip_MiddleDrag
+    L"Doble clic", // Settings_Label_DoubleClick
+    L"Smart", // Settings_Option_DoubleClick_Smart
+    L"Modo de rueda 1", // Settings_Option_DoubleClick_WheelMode1
+    L"Modo de rueda 2", // Settings_Option_DoubleClick_WheelMode2
+    L"Smart: Default zoom/fullscreen toggle;\nWheel Mode 1: Double-click swaps main & thumb wheel functions;\nWheel Mode 2: Double-click toggles image pan mode;\nTip: Shift + Wheel acts as Thumb Wheel.", // Settings_Tooltip_DoubleClick
+    L"Controls key pan and wheel pan speed", // Settings_Tooltip_PanStepNormal
+    L"Main Wheel: Next/Prev; Thumb/Shift+Wheel: Zoom", // OSD_WheelMode1_NextPrevZoom
+    L"Main Wheel: Zoom; Thumb/Shift+Wheel: Next/Prev", // OSD_WheelMode1_ZoomNextPrev
+    L"Wheel: Pan Mode", // OSD_WheelMode2_Pan
+    L"Wheel: Default Mode", // OSD_WheelMode2_Default
     L"Velocidad de zoom con arrastre derecho", // Settings_Label_RightDragZoomSpeed
     L"Velocidad de zoom (temporal): ", // OSD_WheelZoomSpeed
     L"Ajustar velocidad de zoom temporalmente", // Help_Action_AdjustZoomSpeed
@@ -5088,6 +5214,7 @@ static const LanguageTable Table_FR = {
     L"Show Edge Overflow Indicators", // Settings_Label_ShowBorderIndicator
     L"Shows an indicator line in the direction where the image exceeds the window borders.", // Settings_Tooltip_ShowBorderIndicator
     L"Show Minimap", // Settings_Label_ShowNavigator
+    L"When mouse is over minimap, Wheel / Thumb Wheel (Shift + Wheel) pans image", // Settings_Tooltip_ShowNavigator
     L"Auto", // Settings_Option_NavigatorAuto
     L"On", // Settings_Option_NavigatorOn
     L"Off", // Settings_Option_NavigatorOff
@@ -5107,6 +5234,19 @@ static const LanguageTable Table_FR = {
     L"Right Button Drag Zoom", // Settings_Label_RightButtonDragZoom
     L"Wheel Zoom Speed", // Settings_Label_WheelZoomSpeed
     L"Thumb Wheel", // Settings_Label_ThumbWheel
+    L"Can be replaced with Shift + Wheel", // Settings_Tooltip_ThumbWheel
+    L"Alt + Wheel temporarily adjusts zoom speed", // Settings_Tooltip_WheelZoomSpeed
+    L"Can be replaced with Ctrl + Left Click", // Settings_Tooltip_MiddleDrag
+    L"Double-Clic", // Settings_Label_DoubleClick
+    L"Smart", // Settings_Option_DoubleClick_Smart
+    L"Mode Molette 1", // Settings_Option_DoubleClick_WheelMode1
+    L"Mode Molette 2", // Settings_Option_DoubleClick_WheelMode2
+    L"Smart: Default zoom/fullscreen toggle;\nWheel Mode 1: Double-click swaps main & thumb wheel functions;\nWheel Mode 2: Double-click toggles image pan mode;\nTip: Shift + Wheel acts as Thumb Wheel.", // Settings_Tooltip_DoubleClick
+    L"Controls key pan and wheel pan speed", // Settings_Tooltip_PanStepNormal
+    L"Main Wheel: Next/Prev; Thumb/Shift+Wheel: Zoom", // OSD_WheelMode1_NextPrevZoom
+    L"Main Wheel: Zoom; Thumb/Shift+Wheel: Next/Prev", // OSD_WheelMode1_ZoomNextPrev
+    L"Wheel: Pan Mode", // OSD_WheelMode2_Pan
+    L"Wheel: Default Mode", // OSD_WheelMode2_Default
     L"Right Drag Zoom Speed", // Settings_Label_RightDragZoomSpeed
     L"Zoom Speed (Temp): ", // OSD_WheelZoomSpeed
     L"Temporarily Adjust Zoom Speed", // Help_Action_AdjustZoomSpeed
@@ -5623,6 +5763,7 @@ void Apply(const LanguageTable& t) {
   Settings_Label_ShowBorderIndicator = t.Settings_Label_ShowBorderIndicator;
   Settings_Tooltip_ShowBorderIndicator = t.Settings_Tooltip_ShowBorderIndicator;
   Settings_Label_ShowNavigator = t.Settings_Label_ShowNavigator;
+  Settings_Tooltip_ShowNavigator = t.Settings_Tooltip_ShowNavigator;
   Settings_Option_NavigatorAuto = t.Settings_Option_NavigatorAuto;
   Settings_Option_NavigatorOn = t.Settings_Option_NavigatorOn;
   Settings_Option_NavigatorOff = t.Settings_Option_NavigatorOff;
@@ -5641,7 +5782,20 @@ void Apply(const LanguageTable& t) {
   Settings_Label_MouseAnchorZoom = t.Settings_Label_MouseAnchorZoom;
   Settings_Label_RightButtonDragZoom = t.Settings_Label_RightButtonDragZoom;
   Settings_Label_WheelZoomSpeed = t.Settings_Label_WheelZoomSpeed;
+  Settings_Tooltip_WheelZoomSpeed = t.Settings_Tooltip_WheelZoomSpeed;
   Settings_Label_ThumbWheel = t.Settings_Label_ThumbWheel;
+  Settings_Tooltip_ThumbWheel = t.Settings_Tooltip_ThumbWheel;
+  Settings_Tooltip_MiddleDrag = t.Settings_Tooltip_MiddleDrag;
+  Settings_Label_DoubleClick = t.Settings_Label_DoubleClick;
+  Settings_Option_DoubleClick_Smart = t.Settings_Option_DoubleClick_Smart;
+  Settings_Option_DoubleClick_WheelMode1 = t.Settings_Option_DoubleClick_WheelMode1;
+  Settings_Option_DoubleClick_WheelMode2 = t.Settings_Option_DoubleClick_WheelMode2;
+  Settings_Tooltip_DoubleClick = t.Settings_Tooltip_DoubleClick;
+  Settings_Tooltip_PanStepNormal = t.Settings_Tooltip_PanStepNormal;
+  OSD_WheelMode1_NextPrevZoom = t.OSD_WheelMode1_NextPrevZoom;
+  OSD_WheelMode1_ZoomNextPrev = t.OSD_WheelMode1_ZoomNextPrev;
+  OSD_WheelMode2_Pan = t.OSD_WheelMode2_Pan;
+  OSD_WheelMode2_Default = t.OSD_WheelMode2_Default;
   Settings_Label_RightDragZoomSpeed = t.Settings_Label_RightDragZoomSpeed;
   OSD_WheelZoomSpeed = t.OSD_WheelZoomSpeed;
   Help_Action_AdjustZoomSpeed = t.Help_Action_AdjustZoomSpeed;
@@ -5934,8 +6088,8 @@ void SetLanguage(Language lang) {
     Settings_Hotkey_Restore = L"恢复快捷键默认值";
     Settings_Hotkey_Restored = L"已恢复";
     Settings_Hotkey_MouseTip = L"提示：支持鼠标中键、侧键等鼠标多功能按键。更多侧键请在鼠标驱动中映射为键盘按键后绑定。";
-    Settings_Header_KeyboardPan = L"按键平移步长";
-    Settings_Label_PanStepNormal = L"按键平移步长 (普通)";
+    Settings_Header_KeyboardPan = L"平移步长";
+    Settings_Label_PanStepNormal = L"平移步长 (普通)";
     Settings_Label_PanStepFast = L"按键平移步长 (加速)";
     break;
   case Language::ChineseTraditional:
@@ -5945,8 +6099,8 @@ void SetLanguage(Language lang) {
     Settings_Hotkey_Restore = L"恢復快捷鍵預設值";
     Settings_Hotkey_Restored = L"已恢復";
     Settings_Hotkey_MouseTip = L"提示：支持滑鼠中鍵、側鍵等滑鼠多功能按鍵。更多側鍵請在滑鼠驅動中映射為鍵盤按鍵後綁定。";
-    Settings_Header_KeyboardPan = L"按鍵平移步長";
-    Settings_Label_PanStepNormal = L"按鍵平移步長 (普通)";
+    Settings_Header_KeyboardPan = L"平移步長";
+    Settings_Label_PanStepNormal = L"平移步長 (普通)";
     Settings_Label_PanStepFast = L"按鍵平移步長 (加速)";
     break;
   case Language::Japanese:
@@ -5956,8 +6110,8 @@ void SetLanguage(Language lang) {
     Settings_Hotkey_Restore = L"既定のショートカットに戻す";
     Settings_Hotkey_Restored = L"復元されました";
     Settings_Hotkey_MouseTip = L"ヒント：中央ボタンやサイドボタンなどのマウス多機能ボタンに対応しています。その他のサイドボタンは、マウスのドライバーでキーボードのキーにマッピングしてからバインドしてください。";
-    Settings_Header_KeyboardPan = L"キーボードパン歩幅";
-    Settings_Label_PanStepNormal = L"キーボードパン歩幅 (標準)";
+    Settings_Header_KeyboardPan = L"パン歩幅";
+    Settings_Label_PanStepNormal = L"パン歩幅 (標準)";
     Settings_Label_PanStepFast = L"キーボードパン歩幅 (高速)";
     break;
   case Language::Russian:
@@ -5967,8 +6121,8 @@ void SetLanguage(Language lang) {
     Settings_Hotkey_Restore = L"Сбросить горячие клавиши";
     Settings_Hotkey_Restored = L"Восстановлено";
     Settings_Hotkey_MouseTip = L"Подсказка: поддерживаются средняя кнопка, боковые и другие многофункциональные кнопки мыши. Для сопоставления дополнительных кнопок сначала назначьте их на клавиши клавиатуры в драйвере мыши.";
-    Settings_Header_KeyboardPan = L"Шаг клавиатурного сдвига";
-    Settings_Label_PanStepNormal = L"Шаг клавиатурного сдвига (Обычный)";
+    Settings_Header_KeyboardPan = L"Шаг сдвига";
+    Settings_Label_PanStepNormal = L"Шаг сдвига (Обычный)";
     Settings_Label_PanStepFast = L"Шаг клавиатурного сдвига (Быстрый)";
     break;
   case Language::German:
@@ -5978,8 +6132,8 @@ void SetLanguage(Language lang) {
     Settings_Hotkey_Restore = L"Standard-Tastenkombinationen wiederherstellen";
     Settings_Hotkey_Restored = L"Wiederhergestellt";
     Settings_Hotkey_MouseTip = L"Tipp: Unterstützt die mittlere Maustaste, Seitentasten und andere Multifunktionstasten. Ordnen Sie weitere Seitentasten im Maustreiber Tastaturtasten zu, um sie zu binden.";
-    Settings_Header_KeyboardPan = L"Tastatur-Pan-Schrittweite";
-    Settings_Label_PanStepNormal = L"Tastatur-Pan-Schrittweite (Normal)";
+    Settings_Header_KeyboardPan = L"Pan-Schrittweite";
+    Settings_Label_PanStepNormal = L"Pan-Schrittweite (Normal)";
     Settings_Label_PanStepFast = L"Tastatur-Pan-Schrittweite (Schnell)";
     break;
   case Language::Spanish:
@@ -5989,8 +6143,8 @@ void SetLanguage(Language lang) {
     Settings_Hotkey_Restore = L"Restablecer atajos predeterminados";
     Settings_Hotkey_Restored = L"Restablecido";
     Settings_Hotkey_MouseTip = L"Consejo: Admite el botón central del mouse, los botones laterales y otros botones multifunción. Asigne botones laterales adicionales a teclas del teclado en el controlador del mouse para vincularlos.";
-    Settings_Header_KeyboardPan = L"Paso de pan con teclado";
-    Settings_Label_PanStepNormal = L"Paso de pan con teclado (Normal)";
+    Settings_Header_KeyboardPan = L"Paso de pan";
+    Settings_Label_PanStepNormal = L"Paso de pan (Normal)";
     Settings_Label_PanStepFast = L"Paso de pan con teclado (Rápido)";
     break;
   case Language::French:
@@ -6000,8 +6154,8 @@ void SetLanguage(Language lang) {
     Settings_Hotkey_Restore = L"Restaurer les raccourcis par défaut";
     Settings_Hotkey_Restored = L"Restauré";
     Settings_Hotkey_MouseTip = L"Conseil : Prend en charge le bouton central de la souris, les boutons latéraux et autres boutons multifonctions. Mappez les boutons latéraux supplémentaires sur les touches du clavier dans le pilote de votre souris pour les lier.";
-    Settings_Header_KeyboardPan = L"Pas de pan clavier";
-    Settings_Label_PanStepNormal = L"Pas de pan clavier (Normal)";
+    Settings_Header_KeyboardPan = L"Pas de pan";
+    Settings_Label_PanStepNormal = L"Pas de pan (Normal)";
     Settings_Label_PanStepFast = L"Pas de pan clavier (Rapide)";
     break;
   case Language::English:
@@ -6012,8 +6166,8 @@ void SetLanguage(Language lang) {
     Settings_Hotkey_Restore = L"Restore Default Hotkeys";
     Settings_Hotkey_Restored = L"Restored";
     Settings_Hotkey_MouseTip = L"Tip: Supports middle mouse button, side buttons, and other multi-function mouse keys. Map additional buttons to keyboard keys in your mouse driver to bind them.";
-    Settings_Header_KeyboardPan = L"Keyboard Pan Step";
-    Settings_Label_PanStepNormal = L"Keyboard Pan Step (Normal)";
+    Settings_Header_KeyboardPan = L"Pan Step";
+    Settings_Label_PanStepNormal = L"Pan Step (Normal)";
     Settings_Label_PanStepFast = L"Keyboard Pan Step (Fast)";
     break;
   }

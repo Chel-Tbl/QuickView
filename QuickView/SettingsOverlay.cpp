@@ -1568,6 +1568,7 @@ void SettingsOverlay::BuildMenu() {
     tabVisuals.items.push_back(itemMaxSize);
 
     SettingsItem itemBorderInd = { AppStrings::Settings_Label_ShowBorderIndicator, OptionType::Segment, nullptr, &g_config.BorderIndicatorCustomR, &g_config.ShowBorderIndicator, nullptr, 0, 0, {AppStrings::Settings_Option_Off, AppStrings::Settings_Option_On, AppStrings::Settings_Option_Custom} };
+    itemBorderInd.isNewOption = true;
     itemBorderInd.tooltipText = AppStrings::Settings_Tooltip_ShowBorderIndicator;
     itemBorderInd.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) {
         if (g_config.ShowBorderIndicator == 2) {
@@ -1592,6 +1593,7 @@ void SettingsOverlay::BuildMenu() {
     tabVisuals.items.push_back(itemBorderInd);
 
     SettingsItem itemShowNavigator = { AppStrings::Settings_Label_ShowNavigator, OptionType::Segment, nullptr, nullptr, &g_config.ShowNavigator, nullptr, 0, 0, {AppStrings::Settings_Option_NavigatorAuto, AppStrings::Settings_Option_NavigatorOn, AppStrings::Settings_Option_NavigatorOff} };
+    itemShowNavigator.tooltipText = AppStrings::Settings_Tooltip_ShowNavigator;
     tabVisuals.items.push_back(itemShowNavigator);
 
     // Open FullScreen Mode & FullScreen Zoom Mode (Moved to Window Category Bottom)
@@ -1752,12 +1754,36 @@ void SettingsOverlay::BuildMenu() {
     tabControl.items.push_back({ AppStrings::Settings_Header_Mouse, OptionType::Header });
     tabControl.items.push_back({ AppStrings::Settings_Label_InvertWheel, OptionType::Toggle, &g_config.InvertWheel });
     tabControl.items.push_back({ AppStrings::Help_Mouse_Wheel, OptionType::Segment, nullptr, nullptr, &g_config.WheelActionMode, nullptr, 0, 0, {AppStrings::Help_Action_Zoom, AppStrings::Help_Action_NextPrev} });
-    tabControl.items.push_back({ AppStrings::Settings_Label_ThumbWheel, OptionType::Segment, nullptr, nullptr, &g_config.ThumbWheelMode, nullptr, 0, 0, {AppStrings::Help_Action_NextPrev, AppStrings::Help_Action_Zoom} });
+    
+    // Thumb Wheel with Tooltip
+    SettingsItem itemThumbWheel = { AppStrings::Settings_Label_ThumbWheel, OptionType::Segment, nullptr, nullptr, &g_config.ThumbWheelMode, nullptr, 0, 0, {AppStrings::Help_Action_NextPrev, AppStrings::Help_Action_Zoom} };
+    itemThumbWheel.tooltipText = AppStrings::Settings_Tooltip_ThumbWheel;
+    tabControl.items.push_back(itemThumbWheel);
+
+    // Double-Click mode (NEW - Dropdown ComboBox)
+    SettingsItem itemDoubleClick = { AppStrings::Settings_Label_DoubleClick, OptionType::ComboBox, nullptr, nullptr, &g_config.DoubleClickMode };
+    itemDoubleClick.options = {
+        AppStrings::Settings_Option_DoubleClick_Smart,
+        AppStrings::Settings_Option_DoubleClick_WheelMode1,
+        AppStrings::Settings_Option_DoubleClick_WheelMode2,
+        AppStrings::Settings_Option_None
+    };
+    itemDoubleClick.isNewOption = true;
+    itemDoubleClick.tooltipText = AppStrings::Settings_Tooltip_DoubleClick;
+    itemDoubleClick.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) {
+        extern void ResetWheelPanMode();
+        ResetWheelPanMode();
+        SaveConfig();
+    };
+    tabControl.items.push_back(itemDoubleClick);
+
     tabControl.items.push_back({ AppStrings::Settings_Label_ZoomSnapDamping, OptionType::Toggle, &g_config.EnableZoomSnapDamping });
     tabControl.items.push_back({ AppStrings::Settings_Label_MouseAnchorZoom, OptionType::Toggle, &g_config.MouseAnchoredWindowZoom });
     tabControl.items.push_back({ AppStrings::Settings_Label_RightButtonDragZoom, OptionType::Toggle, &g_config.RightButtonDragZoom });
     tabControl.items.push_back({ AppStrings::Settings_Label_RightDragZoomSpeed, OptionType::Slider, nullptr, &g_config.RightDragZoomSpeed, nullptr, nullptr, 0.1f, 3.0f, {}, L"%.1fx" });
-    tabControl.items.push_back({ AppStrings::Settings_Label_WheelZoomSpeed, OptionType::Slider, nullptr, &g_config.WheelZoomSpeed, nullptr, nullptr, 5.0f, 50.0f, {}, L"%.0f%%" });
+    SettingsItem itemWheelZoomSpeed = { AppStrings::Settings_Label_WheelZoomSpeed, OptionType::Slider, nullptr, &g_config.WheelZoomSpeed, nullptr, nullptr, 5.0f, 50.0f, {}, L"%.0f%%" };
+    itemWheelZoomSpeed.tooltipText = AppStrings::Settings_Tooltip_WheelZoomSpeed;
+    tabControl.items.push_back(itemWheelZoomSpeed);
     
     // Use Fixed Zoom Levels
     SettingsItem itemUseFixedZoom = { AppStrings::Settings_Label_UseFixedZoom, OptionType::Toggle, &g_config.UseFixedZoom };
@@ -1799,8 +1825,9 @@ void SettingsOverlay::BuildMenu() {
     };
     tabControl.items.push_back(itemLeftDrag);
     
-    // Middle Drag
+    // Middle Drag with Tooltip
     SettingsItem itemMiddleDrag = { AppStrings::Settings_Label_MiddleDrag, OptionType::Segment, nullptr, nullptr, &g_config.MiddleDragIndex, nullptr, 0, 0, {AppStrings::Settings_Option_Window, AppStrings::Settings_Option_Pan} };
+    itemMiddleDrag.tooltipText = AppStrings::Settings_Tooltip_MiddleDrag;
     itemMiddleDrag.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) {
         if (g_config.MiddleDragIndex == 0) {
             g_config.MiddleDragAction = MouseAction::WindowDrag;
@@ -1828,6 +1855,7 @@ void SettingsOverlay::BuildMenu() {
     tabControl.items.push_back({ AppStrings::Settings_Header_KeyboardPan, OptionType::Header });
     
     SettingsItem itemPanNormal = { AppStrings::Settings_Label_PanStepNormal, OptionType::Slider, nullptr, &g_config.PanStepNormal, nullptr, nullptr, 1.0f, 100.0f, {}, L"%.0f px" };
+    itemPanNormal.tooltipText = AppStrings::Settings_Tooltip_PanStepNormal;
     tabControl.items.push_back(itemPanNormal);
 
     SettingsItem itemPanFast = { AppStrings::Settings_Label_PanStepFast, OptionType::Slider, nullptr, &g_config.PanStepFast, nullptr, nullptr, 10.0f, 500.0f, {}, L"%.0f px" };

@@ -319,6 +319,7 @@ namespace AppStrings {
     extern const wchar_t* Settings_Label_ShowBorderIndicator;
     extern const wchar_t* Settings_Tooltip_ShowBorderIndicator;
     extern const wchar_t* Settings_Label_ShowNavigator;
+    extern const wchar_t* Settings_Tooltip_ShowNavigator;
     extern const wchar_t* Settings_Option_NavigatorAuto;
     extern const wchar_t* Settings_Option_NavigatorOn;
     extern const wchar_t* Settings_Option_NavigatorOff;
@@ -364,7 +365,20 @@ namespace AppStrings {
     extern const wchar_t* Settings_Label_MouseAnchorZoom;
     extern const wchar_t* Settings_Label_RightButtonDragZoom;
     extern const wchar_t* Settings_Label_WheelZoomSpeed;
+    extern const wchar_t* Settings_Tooltip_WheelZoomSpeed;
     extern const wchar_t* Settings_Label_ThumbWheel;
+    extern const wchar_t* Settings_Tooltip_ThumbWheel;
+    extern const wchar_t* Settings_Tooltip_MiddleDrag;
+    extern const wchar_t* Settings_Label_DoubleClick;
+    extern const wchar_t* Settings_Option_DoubleClick_Smart;
+    extern const wchar_t* Settings_Option_DoubleClick_WheelMode1;
+    extern const wchar_t* Settings_Option_DoubleClick_WheelMode2;
+    extern const wchar_t* Settings_Tooltip_DoubleClick;
+    extern const wchar_t* Settings_Tooltip_PanStepNormal;
+    extern const wchar_t* OSD_WheelMode1_NextPrevZoom;
+    extern const wchar_t* OSD_WheelMode1_ZoomNextPrev;
+    extern const wchar_t* OSD_WheelMode2_Pan;
+    extern const wchar_t* OSD_WheelMode2_Default;
     extern const wchar_t* Settings_Label_RightDragZoomSpeed;
     extern const wchar_t* OSD_WheelZoomSpeed;
     extern const wchar_t* Help_Action_AdjustZoomSpeed;

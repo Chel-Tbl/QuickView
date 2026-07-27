@@ -148,6 +148,12 @@ constexpr UINT_PTR TIMER_ID_STARTUP_SHOW = 992;
 
 static const wchar_t* g_szClassName = L"QuickViewClass";
 static const wchar_t* g_szWindowTitle = L"QuickView";
+
+bool g_wheelPanModeActive = false;
+
+void ResetWheelPanMode() {
+    g_wheelPanModeActive = false;
+}
 void HandleAnimFrameStep(HWND hwnd, bool forward); // [v10.5] fwd decl
 void PerformAnimSeek(HWND hwnd, float targetProgress);
 void RequestRepaint(QuickView::PaintLayer layer);
@@ -4325,6 +4331,7 @@ void SaveConfig() {
     WriteConfigBool(L"Controls", L"InvertWheel", g_config.InvertWheel, iniPath.c_str());
     WriteConfigInt(L"Controls", L"WheelActionMode", g_config.WheelActionMode, iniPath.c_str());
     WriteConfigInt(L"Controls", L"ThumbWheelMode", g_config.ThumbWheelMode, iniPath.c_str());
+    WriteConfigInt(L"Controls", L"DoubleClickMode", g_config.DoubleClickMode, iniPath.c_str());
     WriteConfigBool(L"Controls", L"InvertXButton", g_config.InvertXButton, iniPath.c_str());
     WriteConfigBool(L"Controls", L"EnableZoomSnapDamping", g_config.EnableZoomSnapDamping, iniPath.c_str());
     WriteConfigBool(L"Controls", L"MouseAnchoredWindowZoom", g_config.MouseAnchoredWindowZoom, iniPath.c_str());
@@ -4629,6 +4636,8 @@ void LoadConfig() {
     g_config.ThumbWheelMode = GetPrivateProfileIntW(L"Controls", L"ThumbWheelMode", 0, iniPath.c_str());
     if (g_config.ThumbWheelMode < 0 || g_config.ThumbWheelMode > 1) g_config.ThumbWheelMode = 0;
     if (g_config.WheelActionMode < 0 || g_config.WheelActionMode > 1) g_config.WheelActionMode = 0;
+    g_config.DoubleClickMode = GetPrivateProfileIntW(L"Controls", L"DoubleClickMode", 0, iniPath.c_str());
+    if (g_config.DoubleClickMode < 0 || g_config.DoubleClickMode > 3) g_config.DoubleClickMode = 0;
     g_config.InvertXButton = GetPrivateProfileIntW(L"Controls", L"InvertXButton", 0, iniPath.c_str()) != 0;
     g_config.EnableZoomSnapDamping = GetPrivateProfileIntW(L"Controls", L"EnableZoomSnapDamping", 1, iniPath.c_str()) != 0;
     g_config.MouseAnchoredWindowZoom = GetPrivateProfileIntW(L"Controls", L"MouseAnchoredWindowZoom", 0, iniPath.c_str()) != 0;
@@ -8488,6 +8497,40 @@ SKIP_EDGE_NAV:;
             auto hit = g_uiRenderer->HitTest((float)pt.x, (float)pt.y);
             if (hit.type != UIHitResult::None) return 0;
         }
+
+        if (g_config.DoubleClickMode == 3) {
+            // Option: None
+            return 0;
+        }
+        if (g_config.DoubleClickMode == 1) {
+            // Option: Wheel Mode 1
+            if (g_config.WheelActionMode == 0) {
+                g_config.WheelActionMode = 1;
+                g_config.ThumbWheelMode = 1;
+                g_osd.Show(hwnd, AppStrings::OSD_WheelMode1_NextPrevZoom, false);
+            } else {
+                g_config.WheelActionMode = 0;
+                g_config.ThumbWheelMode = 0;
+                g_osd.Show(hwnd, AppStrings::OSD_WheelMode1_ZoomNextPrev, false);
+            }
+            SaveConfig();
+            if (g_settingsOverlay.IsVisible()) {
+                g_settingsOverlay.RebuildMenu();
+            }
+            return 0;
+        }
+        if (g_config.DoubleClickMode == 2) {
+            // Option: Wheel Mode 2
+            g_wheelPanModeActive = !g_wheelPanModeActive;
+            if (g_wheelPanModeActive) {
+                g_osd.Show(hwnd, AppStrings::OSD_WheelMode2_Pan, false);
+            } else {
+                g_osd.Show(hwnd, AppStrings::OSD_WheelMode2_Default, false);
+            }
+            return 0;
+        }
+
+        // DoubleClickMode == 0 (Smart Double Click / Existing Logic)
         // Fullscreen and maximized logic unified below
 
         if (IsCompareModeActive()) {
@@ -9689,7 +9732,36 @@ SKIP_EDGE_NAV:;
         }
 
         float delta = GET_WHEEL_DELTA_WPARAM(wParam) / 120.0f;
-        if (g_config.InvertWheel) delta = -delta; // Apply invert setting to thumb wheel too? We can just use the regular invert setting
+        if (g_config.InvertWheel) delta = -delta;
+
+        if (g_wheelPanModeActive) {
+            float dx = delta * g_config.PanStepNormal;
+            if (IsCompareModeActive()) {
+                if (AppContext::GetInstance().Compare.activePane == ComparePane::Left) {
+                    GetPaneContext(PaneSlot::Left).view.PanX += dx;
+                    if (AppContext::GetInstance().Compare.syncPan) {
+                        GetPaneContext(PaneSlot::Primary).view.PanX += dx;
+                    }
+                } else {
+                    GetPaneContext(PaneSlot::Primary).view.PanX += dx;
+                    if (AppContext::GetInstance().Compare.syncPan) {
+                        GetPaneContext(PaneSlot::Left).view.PanX += dx;
+                    }
+                }
+                MarkCompareDirty();
+                RequestRepaint(PaintLayer::Image | PaintLayer::Static);
+            } else if (GetPaneContext(PaneSlot::Primary).resource) {
+                GetPaneContext(PaneSlot::Primary).view.PanX += dx;
+                RECT rc; GetClientRect(hwnd, &rc);
+                SyncDCompState(hwnd, (float)rc.right, (float)rc.bottom);
+                if (UseSvgViewportRendering(GetPaneContext(PaneSlot::Primary).resource)) {
+                    RequestRepaint(PaintLayer::Image | PaintLayer::Dynamic | PaintLayer::Static);
+                } else {
+                    RequestRepaint(PaintLayer::Dynamic | PaintLayer::Static);
+                }
+            }
+            return 0;
+        }
 
         if (g_config.ThumbWheelMode == 0) { // Navigate
             int direction = (delta > 0.0f) ? 1 : -1; // Positive is usually right, negative is left
@@ -9769,12 +9841,155 @@ SKIP_EDGE_NAV:;
 
         bool isCtrl = (GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) != 0;
         bool isAlt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+        bool isShift = (GET_KEYSTATE_WPARAM(wParam) & MK_SHIFT) != 0 || (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+
+        // Minimap Hover Wheel Pan Feature:
+        // Rolling mouse wheel over the minimap (navigator overlay) ALWAYS pans the image directly.
+        POINT ptScreen = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        POINT ptClient = ptScreen;
+        ScreenToClient(hwnd, &ptClient);
+        MinimapHitResult miniHit = HitTestMinimaps(ptClient);
+        if (miniHit.minimapIdx != -1 && !isCtrl && !isAlt) {
+            float panStep = g_config.PanStepNormal;
+            if (isShift) {
+                // Shift + Wheel over minimap = Horizontal Pan
+                float dx = delta * panStep;
+                if (IsCompareModeActive()) {
+                    if (AppContext::GetInstance().Compare.activePane == ComparePane::Left) {
+                        GetPaneContext(PaneSlot::Left).view.PanX += dx;
+                        if (AppContext::GetInstance().Compare.syncPan) GetPaneContext(PaneSlot::Primary).view.PanX += dx;
+                    } else {
+                        GetPaneContext(PaneSlot::Primary).view.PanX += dx;
+                        if (AppContext::GetInstance().Compare.syncPan) GetPaneContext(PaneSlot::Left).view.PanX += dx;
+                    }
+                    MarkCompareDirty();
+                    RequestRepaint(PaintLayer::Image | PaintLayer::Static);
+                } else if (GetPaneContext(PaneSlot::Primary).resource) {
+                    GetPaneContext(PaneSlot::Primary).view.PanX += dx;
+                    RECT rc; GetClientRect(hwnd, &rc);
+                    SyncDCompState(hwnd, (float)rc.right, (float)rc.bottom);
+                    if (UseSvgViewportRendering(GetPaneContext(PaneSlot::Primary).resource)) {
+                        RequestRepaint(PaintLayer::Image | PaintLayer::Dynamic | PaintLayer::Static);
+                    } else {
+                        RequestRepaint(PaintLayer::Dynamic | PaintLayer::Static);
+                    }
+                }
+            } else {
+                // Vertical Pan over minimap
+                float dy = delta * panStep;
+                if (IsCompareModeActive()) {
+                    if (AppContext::GetInstance().Compare.activePane == ComparePane::Left) {
+                        GetPaneContext(PaneSlot::Left).view.PanY += dy;
+                        if (AppContext::GetInstance().Compare.syncPan) GetPaneContext(PaneSlot::Primary).view.PanY += dy;
+                    } else {
+                        GetPaneContext(PaneSlot::Primary).view.PanY += dy;
+                        if (AppContext::GetInstance().Compare.syncPan) GetPaneContext(PaneSlot::Left).view.PanY += dy;
+                    }
+                    MarkCompareDirty();
+                    RequestRepaint(PaintLayer::Image | PaintLayer::Static);
+                } else if (GetPaneContext(PaneSlot::Primary).resource) {
+                    GetPaneContext(PaneSlot::Primary).view.PanY += dy;
+                    RECT rc; GetClientRect(hwnd, &rc);
+                    SyncDCompState(hwnd, (float)rc.right, (float)rc.bottom);
+                    if (UseSvgViewportRendering(GetPaneContext(PaneSlot::Primary).resource)) {
+                        RequestRepaint(PaintLayer::Image | PaintLayer::Dynamic | PaintLayer::Static);
+                    } else {
+                        RequestRepaint(PaintLayer::Dynamic | PaintLayer::Static);
+                    }
+                }
+            }
+            return 0;
+        }
+
+        if (isShift && !isCtrl && !isAlt) {
+            // Shift + Wheel acts as Thumb Wheel (WM_MOUSEHWHEEL)
+            if (g_wheelPanModeActive) {
+                float dx = delta * g_config.PanStepNormal;
+                if (IsCompareModeActive()) {
+                    if (AppContext::GetInstance().Compare.activePane == ComparePane::Left) {
+                        GetPaneContext(PaneSlot::Left).view.PanX += dx;
+                        if (AppContext::GetInstance().Compare.syncPan) {
+                            GetPaneContext(PaneSlot::Primary).view.PanX += dx;
+                        }
+                    } else {
+                        GetPaneContext(PaneSlot::Primary).view.PanX += dx;
+                        if (AppContext::GetInstance().Compare.syncPan) {
+                            GetPaneContext(PaneSlot::Left).view.PanX += dx;
+                        }
+                    }
+                    MarkCompareDirty();
+                    RequestRepaint(PaintLayer::Image | PaintLayer::Static);
+                } else if (GetPaneContext(PaneSlot::Primary).resource) {
+                    GetPaneContext(PaneSlot::Primary).view.PanX += dx;
+                    RECT rc; GetClientRect(hwnd, &rc);
+                    SyncDCompState(hwnd, (float)rc.right, (float)rc.bottom);
+                    if (UseSvgViewportRendering(GetPaneContext(PaneSlot::Primary).resource)) {
+                        RequestRepaint(PaintLayer::Image | PaintLayer::Dynamic | PaintLayer::Static);
+                    } else {
+                        RequestRepaint(PaintLayer::Dynamic | PaintLayer::Static);
+                    }
+                }
+                return 0;
+            }
+
+            if (g_config.ThumbWheelMode == 0) { // Navigate
+                int direction = (delta > 0.0f) ? 1 : -1;
+                if (delta != 0.0f && CheckUnsavedChanges(hwnd)) {
+                    Navigate(hwnd, direction);
+                }
+            } else if (g_config.ThumbWheelMode == 1) { // Zoom
+                POINT pt;
+                GetCursorPos(&pt);
+                ScreenToClient(hwnd, &pt);
+
+                float newTotalScale = CalculateTargetZoom(hwnd, delta, false);
+                
+                if (IsCompareModeActive()) {
+                    ComparePane pane = AppContext::GetInstance().CompareCtrl->HitTest(hwnd, pt);
+                    AppContext::GetInstance().Compare.activePane = pane;
+                    ApplyCompareZoomWithMultiplier(hwnd, pane, ComputeZoomStep(delta), &pt, AppContext::GetInstance().Compare.syncZoom);
+                } else {
+                    PerformSmartZoom(hwnd, newTotalScale, &pt, false, true);
+                }
+
+                ShowZoomOsd(hwnd, newTotalScale);
+            }
+            return 0;
+        }
+
+        if (g_wheelPanModeActive && !isCtrl && !isAlt) {
+            float dy = delta * g_config.PanStepNormal;
+            if (IsCompareModeActive()) {
+                if (AppContext::GetInstance().Compare.activePane == ComparePane::Left) {
+                    GetPaneContext(PaneSlot::Left).view.PanY += dy;
+                    if (AppContext::GetInstance().Compare.syncPan) {
+                        GetPaneContext(PaneSlot::Primary).view.PanY += dy;
+                    }
+                } else {
+                    GetPaneContext(PaneSlot::Primary).view.PanY += dy;
+                    if (AppContext::GetInstance().Compare.syncPan) {
+                        GetPaneContext(PaneSlot::Left).view.PanY += dy;
+                    }
+                }
+                MarkCompareDirty();
+                RequestRepaint(PaintLayer::Image | PaintLayer::Static);
+            } else if (GetPaneContext(PaneSlot::Primary).resource) {
+                GetPaneContext(PaneSlot::Primary).view.PanY += dy;
+                RECT rc; GetClientRect(hwnd, &rc);
+                SyncDCompState(hwnd, (float)rc.right, (float)rc.bottom);
+                if (UseSvgViewportRendering(GetPaneContext(PaneSlot::Primary).resource)) {
+                    RequestRepaint(PaintLayer::Image | PaintLayer::Dynamic | PaintLayer::Static);
+                } else {
+                    RequestRepaint(PaintLayer::Dynamic | PaintLayer::Static);
+                }
+            }
+            return 0;
+        }
 
         if (isAlt) {
             if (!g_config.UseFixedZoom) {
                 g_config.WheelZoomSpeed += (delta > 0) ? 5.0f : -5.0f;
                 g_config.WheelZoomSpeed = std::max(5.0f, std::min(50.0f, g_config.WheelZoomSpeed));
-                SaveConfig();
                 wchar_t speedBuf[64];
                 swprintf_s(speedBuf, L"%s%.0f%%", AppStrings::OSD_WheelZoomSpeed, g_config.WheelZoomSpeed);
                 g_osd.Show(hwnd, speedBuf, false);

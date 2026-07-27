@@ -2,6 +2,9 @@
 #include <string>
 #include <d2d1.h>
 #include <d2d1helper.h>
+#include "ImageTypes.h"
+
+extern void RequestRepaint(QuickView::PaintLayer layer);
 
 enum class OSDPosition { Bottom, Top, TopRight };
 
@@ -28,7 +31,7 @@ struct OSDState {
         Duration = durationMs;
         if (hwnd) {
             SetTimer(hwnd, 994, 30, nullptr);
-            InvalidateRect(hwnd, nullptr, FALSE);
+            RequestRepaint(QuickView::PaintLayer::Dynamic);
         }
     }
 
@@ -45,7 +48,7 @@ struct OSDState {
         Duration = durationMs;
         if (hwnd) {
             SetTimer(hwnd, 994, 30, nullptr);
-            InvalidateRect(hwnd, nullptr, FALSE);
+            RequestRepaint(QuickView::PaintLayer::Dynamic);
         }
     }
 
