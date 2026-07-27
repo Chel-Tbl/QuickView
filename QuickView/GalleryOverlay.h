@@ -21,6 +21,10 @@ public:
          ID2D1CommandList *pBgCmdList = nullptr,
          const D2D1_MATRIX_3X2_F &bgTransform = D2D1::Matrix3x2F::Identity());
 
+  // Device Resource Lifecycle Management
+  void CreateDeviceResources(ID2D1RenderTarget* pDC);
+  void DiscardDeviceResources();
+
   // Interaction
   bool OnKeyDown(UINT key); // Returns true if handled
   bool OnMouseWheel(int delta);

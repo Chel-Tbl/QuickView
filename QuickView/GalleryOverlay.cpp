@@ -394,7 +394,31 @@ bool GalleryOverlay::HitTestArea(int x, int y, float winW, float winH) const {
     return (x >= -(int)tolerance && x <= (int)(winW + tolerance) && y >= -(int)tolerance && y <= (int)(targetH + tolerance));
 }
 
-void GalleryOverlay::Render(ID2D1DeviceContext* pDC, const D2D1_SIZE_F& size, ID2D1CommandList* pBgCmdList, const D2D1_MATRIX_3X2_F& bgTransform) {
+void GalleryOverlay::CreateDeviceResources(ID2D1RenderTarget* pDC) {
+    if (!pDC) return;
+    if (!m_brushBg) pDC->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 1.0f), &m_brushBg);
+    if (!m_brushSelection) pDC->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::DodgerBlue), &m_brushSelection);
+    if (!m_brushText) pDC->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &m_brushText);
+    if (!m_brushOverlay) pDC->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.5f), &m_brushOverlay);
+}
+
+void GalleryOverlay::DiscardDeviceResources() {
+    m_brushBg.Reset();
+    m_brushSelection.Reset();
+    m_brushText.Reset();
+    m_brushOverlay.Reset();
+    m_brushPinnedGradient.Reset();
+    m_pinnedGradientStops.Reset();
+}
+
+void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
+                             ID2D1CommandList *pBgCmdList,
+                             const D2D1_MATRIX_3X2_F &bgTransform) {
+    if (!pDC || !m_pNav || m_pNav->Count() == 0) return;
+    if (m_mode == GalleryMode::Hidden && m_transitionProgress <= 0.001f) return;
+
+    // Ensure all D2D device brushes are initialized atomically regardless of render branches
+    CreateDeviceResources(pDC);
     if (!IsVisible() || !m_pThumbMgr || !m_pNav) return;
     
     // Dynamic columns calculation based on preferred thumbnail size and available width
@@ -684,8 +708,8 @@ void GalleryOverlay::Render(ID2D1DeviceContext* pDC, const D2D1_SIZE_F& size, ID
         if (bmp) {
             // Use BitmapBrush to draw with elegant 6px rounded corners
             ComPtr<ID2D1BitmapBrush> bmpBrush;
-            pDC->CreateBitmapBrush(bmp.Get(), &bmpBrush);
-            if (bmpBrush) {
+            HRESULT hr = pDC->CreateBitmapBrush(bmp.Get(), &bmpBrush);
+            if (SUCCEEDED(hr) && bmpBrush) {
                 bmpBrush->SetExtendModeX(D2D1_EXTEND_MODE_CLAMP);
                 bmpBrush->SetExtendModeY(D2D1_EXTEND_MODE_CLAMP);
                 bmpBrush->SetInterpolationMode(D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
@@ -699,15 +723,24 @@ void GalleryOverlay::Render(ID2D1DeviceContext* pDC, const D2D1_SIZE_F& size, ID
                 bmpBrush->SetTransform(trans);
                 
                 pDC->FillRoundedRectangle(D2D1::RoundedRect(cellRect, 6.0f * scale, 6.0f * scale), bmpBrush.Get());
+            } else if (m_brushBg) {
+                // Fallback to placeholder box if CreateBitmapBrush fails
+                D2D1_COLOR_F phBase = isLight ? D2D1::ColorF(0.85f, 0.85f, 0.85f, 1.0f) : D2D1::ColorF(0.2f, 0.2f, 0.2f, 1.0f);
+                phBase.a *= m_transitionProgress;
+                m_brushBg->SetColor(phBase);
+                m_brushBg->SetOpacity(1.0f);
+                pDC->FillRoundedRectangle(D2D1::RoundedRect(cellRect, 6.0f * scale, 6.0f * scale), m_brushBg.Get());
             }
         } else {
             // Draw placeholder box (matching 6px rounded corners)
-            D2D1_COLOR_F phBase = isLight ? D2D1::ColorF(0.85f, 0.85f, 0.85f, 1.0f) : D2D1::ColorF(0.2f, 0.2f, 0.2f, 1.0f);
-            phBase.a *= m_transitionProgress;
-            
-            m_brushBg->SetColor(phBase);
-            m_brushBg->SetOpacity(1.0f);
-            pDC->FillRoundedRectangle(D2D1::RoundedRect(cellRect, 6.0f * scale, 6.0f * scale), m_brushBg.Get());
+            if (m_brushBg) {
+                D2D1_COLOR_F phBase = isLight ? D2D1::ColorF(0.85f, 0.85f, 0.85f, 1.0f) : D2D1::ColorF(0.2f, 0.2f, 0.2f, 1.0f);
+                phBase.a *= m_transitionProgress;
+                
+                m_brushBg->SetColor(phBase);
+                m_brushBg->SetOpacity(1.0f);
+                pDC->FillRoundedRectangle(D2D1::RoundedRect(cellRect, 6.0f * scale, 6.0f * scale), m_brushBg.Get());
+            }
             
             // Queue request only if NOT actively columns-zooming (performance LOD)
             if (!m_isZooming) {
