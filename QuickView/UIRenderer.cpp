@@ -53,6 +53,53 @@ extern bool GetCompareIndicatorState(int& outPane, float& outSplitRatio, bool& o
 extern bool GetCompareInfoSnapshot(CImageLoader::ImageMetadata& left, CImageLoader::ImageMetadata& right);
 extern bool GetAdaptiveUiPaneSnapshot(int paneIndex, AdaptiveUiPaneSnapshot& outSnapshot);
 
+static void GetMaximizedWindowPaddings(HWND hwnd, bool isFullscreen, float& outPadX, float& outPadY) {
+    outPadX = 0.0f;
+    outPadY = 0.0f;
+    if (!hwnd || isFullscreen || !IsZoomed(hwnd)) return;
+
+    // Method 1: Physical Geometry from Monitor WorkArea vs WindowRect (100% accurate for multi-monitor mixed DPI)
+    HMONITOR hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    if (hMon) {
+        MONITORINFO mi{};
+        mi.cbSize = sizeof(mi);
+        RECT rcWin = {};
+        if (GetMonitorInfoW(hMon, &mi) && GetWindowRect(hwnd, &rcWin)) {
+            int padX = mi.rcWork.left - rcWin.left;
+            int padY = mi.rcWork.top - rcWin.top;
+            if (padX > 0 && padY > 0) {
+                outPadX = (float)padX;
+                outPadY = (float)padY;
+                return;
+            }
+        }
+    }
+
+    // Method 2: Per-Monitor DPI SystemMetrics Fallback
+    UINT dpi = 96;
+    typedef UINT (WINAPI *PFN_GetDpiForWindow)(HWND);
+    static PFN_GetDpiForWindow pfnGetDpiForWindow = (PFN_GetDpiForWindow)GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow");
+    if (pfnGetDpiForWindow) {
+        dpi = pfnGetDpiForWindow(hwnd);
+    }
+
+    typedef int (WINAPI *PFN_GetSystemMetricsForDpi)(int, UINT);
+    static PFN_GetSystemMetricsForDpi pfnGetSystemMetricsForDpi = (PFN_GetSystemMetricsForDpi)GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetSystemMetricsForDpi");
+    
+    int frameX = 0, frameY = 0, paddedBorder = 0;
+    if (pfnGetSystemMetricsForDpi && dpi > 0) {
+        frameX = pfnGetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi);
+        frameY = pfnGetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi);
+        paddedBorder = pfnGetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+    } else {
+        frameX = GetSystemMetrics(SM_CXSIZEFRAME);
+        frameY = GetSystemMetrics(SM_CYSIZEFRAME);
+        paddedBorder = GetSystemMetrics(SM_CXPADDEDBORDER);
+    }
+    outPadX = (float)(frameX + paddedBorder);
+    outPadY = (float)(frameY + paddedBorder);
+}
+
 static bool PointInRect(float x, float y, const D2D1_RECT_F& rect) {
     return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
@@ -773,8 +820,8 @@ void UIRenderer::RenderStaticLayer(ID2D1DeviceContext* dc, HWND hwnd) {
         }
     }
     
-    // Border Indicators
-    if (g_config.ShowBorderIndicator != 0 && !isAnyOverlayActive) {
+    // Border Indicators (disabled in Compare Mode)
+    if (g_config.ShowBorderIndicator != 0 && !isAnyOverlayActive && !IsCompareModeActive()) {
         DrawBorderIndicators(dc);
     }
 
@@ -1675,13 +1722,7 @@ void UIRenderer::DrawWindowControls(ID2D1DeviceContext* dc, HWND hwnd) {
     // Fullscreen has NO border, so no offset needed
     float xOffset = 0.0f;
     float yOffset = 0.0f;
-    if (IsZoomed(hwnd) && !m_isFullscreen) {
-        int frameX = GetSystemMetrics(SM_CXSIZEFRAME);
-        int frameY = GetSystemMetrics(SM_CYSIZEFRAME);
-        int paddedBorder = GetSystemMetrics(SM_CXPADDEDBORDER);
-        xOffset = (float)(frameX + paddedBorder);
-        yOffset = (float)(frameY + paddedBorder);
-    }
+    GetMaximizedWindowPaddings(hwnd, m_isFullscreen, xOffset, yOffset);
     
     // Designer Dynamic Island Margins & Padding
     float marginX = 4.0f * s; // Extremely close to the edge
@@ -1852,6 +1893,7 @@ void UIRenderer::DrawWindowControls(ID2D1DeviceContext* dc, HWND hwnd) {
 }
 
 void UIRenderer::DrawBorderIndicators(ID2D1DeviceContext* dc) {
+    if (IsCompareModeActive()) return;
     if (m_width <= 0 || m_height <= 0) return;
     D2D1_SIZE_F imgSize = GetEffectiveImageSize();
     if (imgSize.width <= 0.0f || imgSize.height <= 0.0f) return;
@@ -1903,23 +1945,28 @@ void UIRenderer::DrawBorderIndicators(ID2D1DeviceContext* dc) {
     dc->CreateSolidColorBrush(indicatorClr, &borderBrush);
 
     float s = m_uiScale;
-    float thickness = 4.0f * s; // 4px thick line, scaled
+    float thickness = 2.4f * s; // 2.4px thick line, scaled (matched with compare indicator)
+
+    float padX = 0.0f;
+    float padY = 0.0f;
+    extern HWND g_mainHwnd;
+    GetMaximizedWindowPaddings(g_mainHwnd, m_isFullscreen, padX, padY);
 
     // If an edge is outside the window, draw an indicator along that window edge.
     if (drawLeft) {
-        D2D1_RECT_F rect = D2D1::RectF(0.0f, 0.0f, thickness, winH);
+        D2D1_RECT_F rect = D2D1::RectF(padX, padY, padX + thickness, winH - padY);
         dc->FillRectangle(rect, borderBrush.Get());
     }
     if (drawRight) {
-        D2D1_RECT_F rect = D2D1::RectF(winW - thickness, 0.0f, winW, winH);
+        D2D1_RECT_F rect = D2D1::RectF(winW - padX - thickness, padY, winW - padX, winH - padY);
         dc->FillRectangle(rect, borderBrush.Get());
     }
     if (drawTop) {
-        D2D1_RECT_F rect = D2D1::RectF(0.0f, 0.0f, winW, thickness);
+        D2D1_RECT_F rect = D2D1::RectF(padX, padY, winW - padX, padY + thickness);
         dc->FillRectangle(rect, borderBrush.Get());
     }
     if (drawBottom) {
-        D2D1_RECT_F rect = D2D1::RectF(0.0f, winH - thickness, winW, winH);
+        D2D1_RECT_F rect = D2D1::RectF(padX, winH - padY - thickness, winW - padX, winH - padY);
         dc->FillRectangle(rect, borderBrush.Get());
     }
 }
@@ -4183,32 +4230,28 @@ void UIRenderer::DrawComparePaneIndicator(ID2D1DeviceContext* dc, HWND hwnd) {
 
     if (splitRatio <= 0.05f || splitRatio >= 0.95f) splitRatio = 0.5f;
     const float s = m_uiScale;
-    const float inset = 2.0f * s;
     const float thickness = 2.4f * s;
+    const float inset = thickness * 0.5f;
     if (m_width < 20.0f || m_height < 20.0f) return;
 
-    float xOffset = 0.0f;
-    float yOffset = 0.0f;
-    if (IsZoomed(hwnd) && !m_isFullscreen) {
-        int frameX = GetSystemMetrics(SM_CXSIZEFRAME);
-        int frameY = GetSystemMetrics(SM_CYSIZEFRAME);
-        int paddedBorder = GetSystemMetrics(SM_CXPADDEDBORDER);
-        xOffset = (float)(frameX + paddedBorder);
-        yOffset = (float)(frameY + paddedBorder);
-    }
+    float padX = 0.0f;
+    float padY = 0.0f;
+    GetMaximizedWindowPaddings(hwnd, m_isFullscreen, padX, padY);
 
-    const float drawWidth = m_width - xOffset * 2.0f;
-    const float splitX = isWipe ? (xOffset + drawWidth * splitRatio) : (xOffset + drawWidth * 0.5f);
+    const float drawWidth = m_width - padX * 2.0f;
+    const float drawHeight = m_height - padY * 2.0f;
+    const float splitX = isWipe ? (padX + drawWidth * splitRatio) : (padX + drawWidth * 0.5f);
 
+    D2D1_COLOR_F accentClr = D2D1::ColorF(g_config.ThemeCustomAccentR, g_config.ThemeCustomAccentG, g_config.ThemeCustomAccentB, 1.0f);
     ComPtr<ID2D1SolidColorBrush> brush;
-    dc->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.65f, 1.0f, 0.80f), &brush);
+    dc->CreateSolidColorBrush(accentClr, &brush);
     if (!brush) return;
 
     D2D1_RECT_F rect{};
     if (pane == 0) {
-        rect = D2D1::RectF(xOffset + inset, yOffset + inset, splitX - inset, m_height - yOffset - inset);
+        rect = D2D1::RectF(padX + inset, padY + inset, splitX - inset, padY + drawHeight - inset);
     } else {
-        rect = D2D1::RectF(splitX + inset, yOffset + inset, m_width - xOffset - inset, m_height - yOffset - inset);
+        rect = D2D1::RectF(splitX + inset, padY + inset, padX + drawWidth - inset, padY + drawHeight - inset);
     }
 
     if (rect.right <= rect.left + 1.0f || rect.bottom <= rect.top + 1.0f) return;
