@@ -6152,15 +6152,16 @@ static void RestorePreviousForegroundWindow() {
         HWND hRoot = isDesktop ? hTarget : GetTopLevelWindow(hTarget);
         if (!hRoot || !IsWindow(hRoot)) hRoot = hTarget;
 
+        if (!isDesktop && IsIconic(hRoot)) {
+            g_hPreviousForegroundWindow = nullptr;
+            return;
+        }
+
         DWORD targetPid = 0;
         DWORD targetThread = GetWindowThreadProcessId(hRoot, &targetPid);
         
         // Grant foreground focus permission to target process (e.g. Explorer, Directory Opus, etc.)
         AllowSetForegroundWindow(targetPid != 0 ? targetPid : ASFW_ANY);
-
-        if (!isDesktop && IsIconic(hRoot)) {
-            ShowWindow(hRoot, SW_RESTORE);
-        }
 
         DWORD currentThread = GetCurrentThreadId();
         if (targetThread != 0 && targetThread != currentThread) {
