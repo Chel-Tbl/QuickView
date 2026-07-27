@@ -3137,10 +3137,26 @@ HRESULT HeavyLanePool::FullDecodeAndCacheLOD(Worker& worker, const JobInfo& job,
     // Full image region (no cropping)
     QuickView::RegionRect fullRegion = { 0, 0, m_titanSrcW, m_titanSrcH };
     
-    // [Fix14b] Release old cache BEFORE allocating new decode buffer
-    // Prevents peak = old_cache(e.g. 1.1GB) + new_decode(e.g. 4.8GB) coexisting
+    // [Fix-LODExhausted] Reset fail counter when LOD changes.
+    // m_lodCacheFailCount tracks consecutive failures for the SAME LOD.
+    // Transient failures during rapid LOD transitions (e.g. LOD 1->2->3)
+    // must NOT accumulate and permanently block a different LOD.
+    // Without this reset, PNG tiles hit "LOD Exhausted" after 3 cross-LOD
+    // failures, causing permanent missing chunks that never recover.
+    LODCache cascadeSource; // Preserve previous LOD cache for cascaded downsampling
     {
         std::lock_guard lock(m_lodCacheMutex);
+        if (m_lodCache.lod != lod) {
+            m_lodCacheFailCount.store(0, std::memory_order_relaxed);
+        }
+        // [Cascaded Downsampling] If the old cache is exactly LOD N-1 for the
+        // same image, keep it as a downsampling source instead of discarding.
+        // This avoids re-reading the full master backing (e.g. 230 MB) and
+        // reduces CPU work by 75-95% per LOD transition.
+        if (lod > 0 && m_lodCache.pixels && m_lodCache.imageId == job.imageId
+            && m_lodCache.lod == lod - 1) {
+            cascadeSource = m_lodCache; // shared_ptr keeps pixels alive
+        }
         m_lodCache = {};
     }
     
@@ -3200,22 +3216,37 @@ HRESULT HeavyLanePool::FullDecodeAndCacheLOD(Worker& worker, const JobInfo& job,
                 if (!dstBuf) {
                     hr = E_OUTOFMEMORY;
                 } else {
-                    ImageLoaderSimd::ResizeBilinear(masterPixelsView, masterW, masterH,
-                                              masterStride, dstBuf, targetW, targetH, (int)dstStride);
+                    // [Cascaded Downsampling] Prefer LOD N-1 cache as source
+                    // when available — pixel count is 1/4 of master, massive speedup.
+                    if (cascadeSource.pixels && cascadeSource.lod == lod - 1
+                        && cascadeSource.width > 0 && cascadeSource.height > 0) {
+                        ImageLoaderSimd::ResizeBilinear(
+                            cascadeSource.pixels.get(), cascadeSource.width, cascadeSource.height,
+                            cascadeSource.stride, dstBuf, targetW, targetH, (int)dstStride);
+                        QV_LOG("P15_MasterRoute",
+                            TraceLoggingString("CascadedDownscale", "Action"),
+                            TraceLoggingInt32(cascadeSource.width, "SrcW"),
+                            TraceLoggingInt32(cascadeSource.height, "SrcH"),
+                            TraceLoggingInt32(targetW, "DstW"),
+                            TraceLoggingInt32(targetH, "DstH"),
+                            TraceLoggingInt32(lod, "LOD"));
+                    } else {
+                        ImageLoaderSimd::ResizeBilinear(masterPixelsView, masterW, masterH,
+                                                  masterStride, dstBuf, targetW, targetH, (int)dstStride);
+                        QV_LOG("P15_MasterRoute",
+                            TraceLoggingString("InstantDownscale", "Action"),
+                            TraceLoggingInt32(targetW, "Width"),
+                            TraceLoggingInt32(targetH, "Height"),
+                            TraceLoggingInt32(lod, "LOD"));
+                    }
                     
                     fullFrame.pixels = dstBuf;
                     fullFrame.width = targetW;
                     fullFrame.height = targetH;
                     fullFrame.stride = (int)dstStride;
-                    fullFrame.format = QuickView::PixelFormat::BGRA8888; // Assumed for memory formats
+                    fullFrame.format = QuickView::PixelFormat::BGRA8888;
                     fullFrame.memoryDeleter = QuickView::MemoryDeleter::FromAlignedFree();
                     hr = S_OK;
-                    
-                    QV_LOG("P15_MasterRoute",
-                        TraceLoggingString("InstantDownscale", "Action"),
-                        TraceLoggingInt32(targetW, "Width"),
-                        TraceLoggingInt32(targetH, "Height"),
-                        TraceLoggingInt32(lod, "LOD"));
                 }
             } else {
                 if (masterFromRam) {

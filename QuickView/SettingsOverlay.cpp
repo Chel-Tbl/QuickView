@@ -4545,15 +4545,16 @@ SettingsAction SettingsOverlay::OnLButtonDown(float x, float y) {
             
             // Check for Input field click
             if (m_pHoverItem->isHovered && m_pHoverItem->pStrVal) {
+                SettingsItem* targetItem = m_pHoverItem;
                 std::wstring title = AppStrings::Dialog_FixedZoomTitle;
                 std::wstring msg = AppStrings::Dialog_FixedZoomMsg;
                 std::wstring result = AppContext::GetInstance().DialogCtrl->ShowInputDialog(
-                    m_hwnd, title, msg, *m_pHoverItem->pStrVal, L"OK"
+                    m_hwnd, title, msg, *targetItem->pStrVal, L"OK"
                 );
                 
-                if (!result.empty()) {
-                    *m_pHoverItem->pStrVal = result;
-                    if (m_pHoverItem->onChange) m_pHoverItem->onChange(this, m_pHoverItem);
+                if (!result.empty() && targetItem->pStrVal) {
+                    *targetItem->pStrVal = result;
+                    if (targetItem->onChange) targetItem->onChange(this, targetItem);
                     return SettingsAction::RepaintAll;
                 }
             }

@@ -4142,13 +4142,22 @@ void ApplyWindowTheme(HWND hwnd) {
 void ParseFixedZoomLevels() {
     g_runtime.ParsedFixedZoomLevels.clear();
     std::wstring str = g_config.FixedZoomLevels;
+    
+    // Normalize full-width commas and full-width spaces
+    for (wchar_t& ch : str) {
+        if (ch == L'，') ch = L',';
+        else if (ch == L'　') ch = L' ';
+    }
+
     size_t start = 0;
     while (true) {
         size_t pos = str.find(L',', start);
         std::wstring token = (pos == std::wstring::npos) ? str.substr(start) : str.substr(start, pos - start);
         
-        // Trim whitespace
-        token.erase(std::remove_if(token.begin(), token.end(), iswspace), token.end());
+        // Trim whitespace (including standard and full-width whitespace)
+        token.erase(std::remove_if(token.begin(), token.end(), [](wchar_t c) {
+            return iswspace(c) || c == L'　';
+        }), token.end());
         
         if (!token.empty()) {
             wchar_t* endptr = nullptr;
