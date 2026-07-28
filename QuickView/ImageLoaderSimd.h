@@ -27,6 +27,9 @@ void ConvertRGBToBGRA(const uint8_t* src, uint8_t* dst, int width, int height, i
 void ResizeBilinear(const uint8_t* src, int srcW, int srcH, int srcStride,
                     uint8_t* dst, int dstW, int dstH, int dstStride);
 
+/// Pack 16-bit packed pixels to 8-bit pixels (taking upper 8 bits).
+void Pack16to8(const uint16_t* src, uint8_t* dst, size_t pixelCount);
+
 /// Find peak RGB component across R32G32B32A32_FLOAT buffer (ignores alpha).
 float FindPeakFloat(const float* data, size_t pixelCount);
 

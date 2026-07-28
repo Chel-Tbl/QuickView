@@ -352,6 +352,7 @@ private:
         int width = 0, height = 0, stride = 0;
         int lod = -1;           // Which LOD level this cache represents
         ImageID imageId = 0;    // Which image (invalidate on switch)
+        uint64_t lastAccessTime = 0; // [Titan Perf] LRU timestamp
     };
     LODCache m_lodCache;
     LODCache m_masterLOD0Cache; // [NEW] Keep LOD0 decoded image across requests

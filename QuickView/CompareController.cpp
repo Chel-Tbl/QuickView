@@ -371,7 +371,7 @@ bool CompareController::RenderComposite(HWND hwnd) {
         }
     }
 
-    ID2D1DeviceContext* ctx = g_compEngine->BeginPendingUpdate(winW, winH, false, 0, 0, false, compareSurfaceFormat);
+    ID2D1DeviceContext* ctx = g_compEngine->BeginPendingUpdate(winW, winH, false, 0, 0, false, compareSurfaceFormat, GetPaneContext(PaneSlot::Primary).metadata.hasAlpha);
     if (!ctx) return false;
 
     // [Fix] Capture initial transform (e.g. DComp Atlas offset) to avoid Double Translation

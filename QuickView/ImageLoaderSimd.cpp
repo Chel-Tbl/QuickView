@@ -1443,6 +1443,24 @@ void ResizeBilinearImpl(const uint8_t* src, int srcW, int srcH, int srcStride,
     }
 }
 
+void Pack16to8Impl(const uint16_t* HWY_RESTRICT src, uint8_t* HWY_RESTRICT dst, size_t pixelCount) {
+    namespace hn = hwy::HWY_NAMESPACE;
+    const hn::ScalableTag<uint16_t> d16;
+    const hn::Rebind<uint8_t, decltype(d16)> d8;
+    const size_t N = hn::Lanes(d16);
+
+    size_t i = 0;
+    for (; i + N <= pixelCount; i += N) {
+        auto v = hn::LoadU(d16, src + i);
+        auto v8 = hn::ShiftRight<8>(v);
+        auto demoted = hn::DemoteTo(d8, v8);
+        hn::StoreU(demoted, d8, dst + i);
+    }
+    for (; i < pixelCount; ++i) {
+        dst[i] = static_cast<uint8_t>(src[i] >> 8);
+    }
+}
+
 } // namespace HWY_NAMESPACE
 } // namespace ImageLoaderSimd
 HWY_AFTER_NAMESPACE();
@@ -1459,6 +1477,7 @@ HWY_EXPORT(PremultiplyAlphaImpl);
 HWY_EXPORT(SwizzleRGBAToBGRAImpl);
 HWY_EXPORT(ConvertRGBToBGRARowImpl);
 HWY_EXPORT(ResizeBilinearImpl);
+HWY_EXPORT(Pack16to8Impl);
 HWY_EXPORT(FindPeakFloatImpl);
 HWY_EXPORT(ComputeHistogramRowImpl);
 HWY_EXPORT(ComputeHistogramRowFloatImpl);
@@ -1502,6 +1521,10 @@ void ResizeBilinear(const uint8_t* src, int srcW, int srcH, int srcStride,
                     uint8_t* dst, int dstW, int dstH, int dstStride) {
     HWY_DYNAMIC_DISPATCH(ResizeBilinearImpl)(src, srcW, srcH, srcStride,
                                               dst, dstW, dstH, dstStride);
+}
+
+void Pack16to8(const uint16_t* src, uint8_t* dst, size_t pixelCount) {
+    HWY_DYNAMIC_DISPATCH(Pack16to8Impl)(src, dst, pixelCount);
 }
 
 float FindPeakFloat(const float* data, size_t pixelCount) {

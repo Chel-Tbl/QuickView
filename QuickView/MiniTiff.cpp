@@ -18,6 +18,7 @@
 
 #include "pch.h"
 #include "MiniTiff.h"
+#include "ImageLoaderSimd.h"
 #include <cstring>
 #include <vector>
 #include <span>
@@ -426,11 +427,25 @@ HRESULT LoadRegion(const uint8_t* data, size_t size,
     }
 
     // Clamp crop parameters to valid boundaries
-    cropX = (std::max)(0, cropX);
-    cropY = (std::max)(0, cropY);
-    cropW = (std::min)(cropW, static_cast<int>(desc.width) - cropX);
-    cropH = (std::min)(cropH, static_cast<int>(desc.height) - cropY);
-    if (cropW <= 0 || cropH <= 0) return E_INVALIDARG;
+    int cropX = std::max(0, rectX);
+    int cropY = std::max(0, rectY);
+    int cropEndX = std::min(static_cast<int>(desc.width), rectX + rectW);
+    int cropEndY = std::min(static_cast<int>(desc.height), rectY + rectH);
+    int cropW = cropEndX - cropX;
+    int cropH = cropEndY - cropY;
+
+    if (cropW <= 0 || cropH <= 0) return S_OK;
+
+    uint32_t samples = desc.samples;
+    uint32_t bytesPerSample = desc.bitsPerSample / 8;
+    if (bytesPerSample == 0) bytesPerSample = 1;
+    uint32_t highByteOffset = (bytesPerSample == 2) ? (desc.isLE ? 1 : 0) : 0;
+    
+    // Intermediate buffer for 16-to-8 bit SIMD conversion to avoid allocations in hot-path
+    std::vector<uint8_t> rgb8Buf;
+    if (bytesPerSample == 2 && samples == 3 && highByteOffset == 1) {
+        rgb8Buf.resize(static_cast<size_t>(cropW) * 3);
+    }
 
     // Prepare Output
     int outStride = ((cropW * 4) + 63) & ~63; // 64-byte aligned
@@ -441,10 +456,7 @@ HRESULT LoadRegion(const uint8_t* data, size_t size,
     }
     std::memset(pixels, 0, totalBytes);
 
-    uint32_t samples = desc.samples;
-    uint32_t bytesPerSample = desc.bitsPerSample / 8;
-    if (bytesPerSample == 0) bytesPerSample = 1;
-    uint32_t highByteOffset = (bytesPerSample == 2) ? (desc.isLE ? 1 : 0) : 0;
+
     uint32_t pixelStride = samples * bytesPerSample;
     uint32_t rowBytes = desc.width * pixelStride;
     uint16_t predictor = desc.predictor;
@@ -570,22 +582,35 @@ HRESULT LoadRegion(const uint8_t* data, size_t size,
                             dstRow[outX * 4 + 3] = (samples > 1) ? srcRow[localX * pixelStride + bytesPerSample + highByteOffset] : 255;
                         }
                     } else if (photometric == 2) {
-                        for (int x = intersectX; x < intersectEndX; ++x) {
-                            int localX = x - tileX;
-                            int outX = x - cropX;
-                            uint8_t r = srcRow[localX * pixelStride + 0 * bytesPerSample + highByteOffset];
-                            uint8_t g = srcRow[localX * pixelStride + 1 * bytesPerSample + highByteOffset];
-                            uint8_t b = srcRow[localX * pixelStride + 2 * bytesPerSample + highByteOffset];
-                            uint8_t a = (samples >= 4) ? srcRow[localX * pixelStride + 3 * bytesPerSample + highByteOffset] : 255;
-                            if (samples >= 4 && desc.extraSamples != 1) {
-                                r = static_cast<uint8_t>((r * a + 127) / 255);
-                                g = static_cast<uint8_t>((g * a + 127) / 255);
-                                b = static_cast<uint8_t>((b * a + 127) / 255);
+                        int runWidth = intersectEndX - intersectX;
+                        // [Titan Perf] SIMD Accelerated 16-to-8 bit downsampling + BGRA Swizzle
+                        // Only applicable when image is RGB (samples == 3) and Little-Endian (highByteOffset == 1)
+                        if (bytesPerSample == 2 && samples == 3 && highByteOffset == 1) {
+                            int localXStart = intersectX - tileX;
+                            int outXStart = intersectX - cropX;
+                            const uint16_t* src16 = reinterpret_cast<const uint16_t*>(srcRow + localXStart * pixelStride);
+                            uint8_t* dst32 = dstRow + outXStart * 4;
+                            
+                            ImageLoaderSimd::Pack16to8(src16, rgb8Buf.data(), runWidth * 3);
+                            ImageLoaderSimd::ConvertRGBToBGRA(rgb8Buf.data(), dst32, runWidth, 1, runWidth * 4);
+                        } else {
+                            for (int x = intersectX; x < intersectEndX; ++x) {
+                                int localX = x - tileX;
+                                int outX = x - cropX;
+                                uint8_t r = srcRow[localX * pixelStride + 0 * bytesPerSample + highByteOffset];
+                                uint8_t g = srcRow[localX * pixelStride + 1 * bytesPerSample + highByteOffset];
+                                uint8_t b = srcRow[localX * pixelStride + 2 * bytesPerSample + highByteOffset];
+                                uint8_t a = (samples >= 4) ? srcRow[localX * pixelStride + 3 * bytesPerSample + highByteOffset] : 255;
+                                if (samples >= 4 && desc.extraSamples != 1) {
+                                    r = static_cast<uint8_t>((r * a + 127) / 255);
+                                    g = static_cast<uint8_t>((g * a + 127) / 255);
+                                    b = static_cast<uint8_t>((b * a + 127) / 255);
+                                }
+                                dstRow[outX * 4 + 0] = b;
+                                dstRow[outX * 4 + 1] = g;
+                                dstRow[outX * 4 + 2] = r;
+                                dstRow[outX * 4 + 3] = a;
                             }
-                            dstRow[outX * 4 + 0] = b;
-                            dstRow[outX * 4 + 1] = g;
-                            dstRow[outX * 4 + 2] = r;
-                            dstRow[outX * 4 + 3] = a;
                         }
                     } else if (photometric == 3) {
                         if (desc.colorMap.size() >= 768) {
@@ -745,21 +770,28 @@ HRESULT LoadRegion(const uint8_t* data, size_t size,
                             dstRow[outX * 4 + 3] = (samples > 1) ? srcRow[x * pixelStride + bytesPerSample + highByteOffset] : 255;
                         }
                     } else if (photometric == 2) {
-                        for (int x = cropX; x < cropX + cropW; ++x) {
-                            int outX = x - cropX;
-                            uint8_t r = srcRow[x * pixelStride + 0 * bytesPerSample + highByteOffset];
-                            uint8_t g = srcRow[x * pixelStride + 1 * bytesPerSample + highByteOffset];
-                            uint8_t b = srcRow[x * pixelStride + 2 * bytesPerSample + highByteOffset];
-                            uint8_t a = (samples >= 4) ? srcRow[x * pixelStride + 3 * bytesPerSample + highByteOffset] : 255;
-                            if (samples >= 4 && desc.extraSamples != 1) {
-                                r = static_cast<uint8_t>((r * a + 127) / 255);
-                                g = static_cast<uint8_t>((g * a + 127) / 255);
-                                b = static_cast<uint8_t>((b * a + 127) / 255);
+                        // [Titan Perf] SIMD Accelerated 16-to-8 bit downsampling + BGRA Swizzle for Stripped Layout
+                        if (bytesPerSample == 2 && samples == 3 && highByteOffset == 1) {
+                            const uint16_t* src16 = reinterpret_cast<const uint16_t*>(srcRow + cropX * pixelStride);
+                            ImageLoaderSimd::Pack16to8(src16, rgb8Buf.data(), cropW * 3);
+                            ImageLoaderSimd::ConvertRGBToBGRA(rgb8Buf.data(), dstRow, cropW, 1, cropW * 4);
+                        } else {
+                            for (int x = cropX; x < cropX + cropW; ++x) {
+                                int outX = x - cropX;
+                                uint8_t r = srcRow[x * pixelStride + 0 * bytesPerSample + highByteOffset];
+                                uint8_t g = srcRow[x * pixelStride + 1 * bytesPerSample + highByteOffset];
+                                uint8_t b = srcRow[x * pixelStride + 2 * bytesPerSample + highByteOffset];
+                                uint8_t a = (samples >= 4) ? srcRow[x * pixelStride + 3 * bytesPerSample + highByteOffset] : 255;
+                                if (samples >= 4 && desc.extraSamples != 1) {
+                                    r = static_cast<uint8_t>((r * a + 127) / 255);
+                                    g = static_cast<uint8_t>((g * a + 127) / 255);
+                                    b = static_cast<uint8_t>((b * a + 127) / 255);
+                                }
+                                dstRow[outX * 4 + 0] = b;
+                                dstRow[outX * 4 + 1] = g;
+                                dstRow[outX * 4 + 2] = r;
+                                dstRow[outX * 4 + 3] = a;
                             }
-                            dstRow[outX * 4 + 0] = b;
-                            dstRow[outX * 4 + 1] = g;
-                            dstRow[outX * 4 + 2] = r;
-                            dstRow[outX * 4 + 3] = a;
                         }
                     } else if (photometric == 3) {
                         if (desc.colorMap.size() >= 768) {

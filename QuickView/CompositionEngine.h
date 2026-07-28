@@ -47,7 +47,7 @@ public:
     // ===== Visual Ping-Pong Image Layer =====
     // BeginPendingUpdate: Get D2D context for the hidden (pending) layer
     // Call this to draw a new image. Surface is auto-created/resized as needed.
-    ID2D1DeviceContext* BeginPendingUpdate(UINT width, UINT height, bool isTitan = false, UINT fullWidth = 0, UINT fullHeight = 0, bool allowOversizedStandard = false, DXGI_FORMAT surfaceFormatOverride = DXGI_FORMAT_UNKNOWN);
+    ID2D1DeviceContext* BeginPendingUpdate(UINT width, UINT height, bool isTitan = false, UINT fullWidth = 0, UINT fullHeight = 0, bool allowOversizedStandard = false, DXGI_FORMAT surfaceFormatOverride = DXGI_FORMAT_UNKNOWN, bool hasAlpha = true);
     HRESULT EndPendingUpdate();
     
     // PlayPingPongCrossFade: Animate transition from Active to Pending.
@@ -186,6 +186,7 @@ private:
         UINT width = 0;
         UINT height = 0;
         DXGI_FORMAT surfaceFormat = DXGI_FORMAT_UNKNOWN;
+        bool hasAlpha = true;
     };
     
     // [Helper] Extract D2D context from DComp Surface

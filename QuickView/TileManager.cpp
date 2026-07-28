@@ -289,31 +289,22 @@ namespace QuickView {
         // Simpler: Just scan the m_lru list. If item is effectively old (timestamp < current - threshold), kill it.
         // But frame counter might not vary much if we just pause.
         
-        // Let's rely on m_lru strict ordering for now, but since we don't move-to-front,
-        // formatted: "Insertion Order". This is FIFO, not LRU.
-        // To make it LRU without O(N) lookup: Remove from list when accessing? No.
-        // Compromise: When budget exceeded, sort the list by timestamp?
-        // Sorting 256 items is fast.
+        // Let's implement Strict LRU with Batch Eviction to avoid sorting on every frame.
+        // We evict down to 90% of m_maxTiles to give breathing room.
         
-        // 1. Filter out already empty items from list (dead keys)
-        // 2. Sort by lastUsedFrameId (Smallest = Oldest)
-        // 3. Evict oldest.
-
-        // Sort is O(N log N). N=500. negligible.
         m_lru.sort([&](const TileKey& a, const TileKey& b) {
-            // [Fix Recursive Lock] GetTile acquires mutex, but EnforceBudget already holds it!
-            // Use GetTileEntry (Lock-Free / internal) instead.
             auto entryA = GetTileEntry(a);
             auto entryB = GetTileEntry(b);
-            
-            // Check existence and data validity
             uint64_t tA = (entryA && entryA->data) ? entryA->data->lastUsedFrameId : 0;
             uint64_t tB = (entryB && entryB->data) ? entryB->data->lastUsedFrameId : 0;
             return tA < tB;
         });
 
+        // [Titan Perf] Dynamic Watermark: Target 90% of max tiles to avoid constant thrashing
+        int targetTiles = std::max(1, (int)(m_maxTiles * 0.90f));
+        
         // Evict
-        while (GetReadyCount() > m_maxTiles && !m_lru.empty()) {
+        while (GetReadyCount() > targetTiles && !m_lru.empty()) {
             TileKey victim = m_lru.front();
             m_lru.pop_front();
 

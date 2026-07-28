@@ -2222,7 +2222,7 @@ static bool UpgradeSvgSurface(HWND hwnd, ImageResource& res) {
     VisualState vs = GetVisualState();
     
     // Begin DComp update
-    auto ctx = g_compEngine->BeginPendingUpdate(surfW, surfH, false, 0, 0, false, DXGI_FORMAT_B8G8R8A8_UNORM);
+    auto ctx = g_compEngine->BeginPendingUpdate(surfW, surfH, false, 0, 0, false, DXGI_FORMAT_B8G8R8A8_UNORM, GetPaneContext(PaneSlot::Primary).metadata.hasAlpha);
     if (!ctx) return false;
     
     // Clear with transparent
@@ -2369,7 +2369,7 @@ bool RenderImageToDComp(HWND hwnd, ImageResource& res, bool isFastUpgrade) {
     // Handle Empty Resource (Clear Surface)
     if (!res) {
         // Just use current window size for clear
-        ID2D1DeviceContext* ctx = g_compEngine->BeginPendingUpdate(targetWinW, targetWinH, false, 0, 0, false, DXGI_FORMAT_B8G8R8A8_UNORM);
+        ID2D1DeviceContext* ctx = g_compEngine->BeginPendingUpdate(targetWinW, targetWinH, false, 0, 0, false, DXGI_FORMAT_B8G8R8A8_UNORM, GetPaneContext(PaneSlot::Primary).metadata.hasAlpha);
         if (!ctx) return false;
         ctx->Clear(D2D1::ColorF(0, 0, 0, 0)); // Transparent
         g_compEngine->EndPendingUpdate();
@@ -2445,7 +2445,7 @@ bool RenderImageToDComp(HWND hwnd, ImageResource& res, bool isFastUpgrade) {
     // [Fix] REMOVE AlignActiveLayer to prevent double-centering conflict with SetPan
     
     const DXGI_FORMAT imageSurfaceFormat = res.isSvg ? DXGI_FORMAT_B8G8R8A8_UNORM : GetImageResourceSurfaceFormat(res);
-    ID2D1DeviceContext* ctx = g_compEngine->BeginPendingUpdate(surfW, surfH, isTitan, fullWidth, fullHeight, false, imageSurfaceFormat);
+    ID2D1DeviceContext* ctx = g_compEngine->BeginPendingUpdate(surfW, surfH, isTitan, fullWidth, fullHeight, false, imageSurfaceFormat, GetPaneContext(PaneSlot::Primary).metadata.hasAlpha);
     if (!ctx) return false;
     
     // [Geek Glass] Create a CommandList to intercept the drawing

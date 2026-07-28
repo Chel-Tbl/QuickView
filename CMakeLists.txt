@@ -326,6 +326,7 @@ add_executable(QuickViewTests
     tests/StringUtilsTests.cpp
     tests/SupportedExtensionsTests.cpp
     tests/MiniTiffTests.cpp
+    QuickView/ImageLoaderSimd.cpp
     QuickView/MiniTiff.cpp
     QuickView/MiniTiffLzw.cpp
     QuickView/MiniTiffCmyk.cpp

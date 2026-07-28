@@ -11229,6 +11229,12 @@ HRESULT CImageLoader::ReadMetadata(LPCWSTR filePath, ImageMetadata *pMetadata,
 
   // [v5.3] Read File Stats (Size/Date) - ALWAYS read this first
   PopulateFileStats(filePath, pMetadata);
+  
+  // [Titan Perf] Get fast info to fetch alpha status
+  ImageInfo fastInfo;
+  if (SUCCEEDED(GetImageInfoFast(filePath, &fastInfo))) {
+      pMetadata->hasAlpha = fastInfo.hasAlpha;
+  }
 
   // 1. Detect Format (if missing) - Detect first so native probes and WIC fallback know the format
   if (pMetadata->Format.empty()) {

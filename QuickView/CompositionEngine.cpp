@@ -296,7 +296,7 @@ HRESULT CompositionEngine::UpdateVirtualTiles(QuickView::TileManager* tileManage
         // Setup D2D Target
         D2D1_BITMAP_PROPERTIES1 props = D2D1::BitmapProperties1(
             D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-            D2D1::PixelFormat(pLayer->surfaceFormat, D2D1_ALPHA_MODE_PREMULTIPLIED)
+            D2D1::PixelFormat(pLayer->surfaceFormat, pLayer->hasAlpha ? D2D1_ALPHA_MODE_PREMULTIPLIED : D2D1_ALPHA_MODE_IGNORE)
         );
         if (pLayer->surfaceFormat == DXGI_FORMAT_R16G16B16A16_FLOAT && m_scRgbContext) {
             props.colorContext = m_scRgbContext.Get();
@@ -591,7 +591,7 @@ bool CompositionEngine::RefreshDisplayColorState(bool forceHdrSimulation) {
 // Ping-Pong Image Rendering
 // ============================================================================
 // [Smart Dispatch] Create surfaces based on size (Standard vs Titan)
-ID2D1DeviceContext* CompositionEngine::BeginPendingUpdate(UINT width, UINT height, bool isTitan, UINT fullWidth, UINT fullHeight, bool allowOversizedStandard, DXGI_FORMAT surfaceFormatOverride) {
+ID2D1DeviceContext* CompositionEngine::BeginPendingUpdate(UINT width, UINT height, bool isTitan, UINT fullWidth, UINT fullHeight, bool allowOversizedStandard, DXGI_FORMAT surfaceFormatOverride, bool hasAlpha) {
     if (!m_device || !m_d2dDevice) return nullptr;
 
     // Determine target layer (the hidden one)
@@ -610,6 +610,7 @@ ID2D1DeviceContext* CompositionEngine::BeginPendingUpdate(UINT width, UINT heigh
     }
     layer.isTitan = false;
     layer.surfaceFormat = ResolveImageSurfaceFormat(surfaceFormatOverride == DXGI_FORMAT_UNKNOWN ? m_surfaceFormat : surfaceFormatOverride);
+    layer.hasAlpha = hasAlpha;
     
     HRESULT hr = S_OK; (void)hr;
 
@@ -654,7 +655,7 @@ ID2D1DeviceContext* CompositionEngine::BeginPendingUpdate(UINT width, UINT heigh
          
          // Standard Surface for Base
          hr = m_device->CreateSurface(baseAccurateW, baseAccurateH, 
-             layer.surfaceFormat, DXGI_ALPHA_MODE_PREMULTIPLIED, &layer.baseSurface);
+             layer.surfaceFormat, layer.hasAlpha ? DXGI_ALPHA_MODE_PREMULTIPLIED : DXGI_ALPHA_MODE_IGNORE, &layer.baseSurface);
              
          layer.baseVisual->SetContent(layer.baseSurface.Get());
          
@@ -677,8 +678,8 @@ ID2D1DeviceContext* CompositionEngine::BeginPendingUpdate(UINT width, UINT heigh
              if (lodW == 0) lodW = 1;
              if (lodH == 0) lodH = 1;
              
-             m_device->CreateVirtualSurface(lodW, lodH, 
-                 layer.surfaceFormat, DXGI_ALPHA_MODE_PREMULTIPLIED, &layer.virtualSurfaces[i]);
+             hr = m_device->CreateVirtualSurface(lodW, lodH, 
+                 layer.surfaceFormat, layer.hasAlpha ? DXGI_ALPHA_MODE_PREMULTIPLIED : DXGI_ALPHA_MODE_IGNORE, &layer.virtualSurfaces[i]);
                  
              layer.lodVisuals[i]->SetContent(layer.virtualSurfaces[i].Get());
              
@@ -698,8 +699,8 @@ ID2D1DeviceContext* CompositionEngine::BeginPendingUpdate(UINT width, UINT heigh
          layer.height = height;
 
          // Create standard surface
-         hr = m_device->CreateSurface(width, height, 
-             layer.surfaceFormat, DXGI_ALPHA_MODE_PREMULTIPLIED, &layer.surface);
+         hr = m_device->CreateSurface(layer.width, layer.height, 
+             layer.surfaceFormat, layer.hasAlpha ? DXGI_ALPHA_MODE_PREMULTIPLIED : DXGI_ALPHA_MODE_IGNORE, &layer.surface);
              
          layer.visual->SetContent(layer.surface.Get());
          layer.visual->SetBitmapInterpolationMode(DCOMPOSITION_BITMAP_INTERPOLATION_MODE_LINEAR);
