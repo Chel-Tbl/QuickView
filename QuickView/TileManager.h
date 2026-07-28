@@ -117,6 +117,8 @@ namespace QuickView {
         int m_currentLOD = 0;
         bool m_viewportTilesActive = false;
         
+        std::atomic<int> m_readyCount{0}; // [BugFix] O(1) Ready tile counter
+        
         bool m_initialized = false;
         int m_imageW = 0, m_imageH = 0;
         

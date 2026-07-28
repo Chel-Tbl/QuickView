@@ -244,7 +244,10 @@ namespace QuickView {
                 entry.data->generationId = m_generationId;
 
                 // Add to LRU
-                m_lru.push_front(entry.data->key); 
+                if (!entry.inLru) {
+                    m_lru.push_front(entry.data->key);
+                    entry.inLru = true;
+                }
                 missing.push_back(entry.data->key);
             } 
             else {
@@ -304,16 +307,19 @@ namespace QuickView {
         int targetTiles = std::max(1, (int)(m_maxTiles * 0.90f));
         
         // Evict
-        while (GetReadyCount() > targetTiles && !m_lru.empty()) {
+        while (m_readyCount.load() > targetTiles && !m_lru.empty()) {
             TileKey victim = m_lru.front();
             m_lru.pop_front();
 
             TileEntry* entry = GetTileEntry(victim);
             if (entry) {
-                // Don't evict loading tasks
+                entry->inLru = false; // Mark removed from LRU
+                
+                // [Fix] Evict unconditionally. Loading tasks at the front of LRU are old/stale.
+                // Do not skip them, as doing so permanently drops them from LRU tracking.
                 TileStateCode s = entry->state.load(std::memory_order_relaxed);
-                if (s == TileStateCode::Loading || s == TileStateCode::Queued) {
-                    continue; 
+                if (s == TileStateCode::Ready) {
+                    m_readyCount--;
                 }
                 
                 // [Fix17d] Record VirtualSurface tiles for VRAM Trim
@@ -392,7 +398,10 @@ namespace QuickView {
              if (entry->data) {
                  entry->data->state = TileStateCode::Ready;
                  entry->data->frame = frame;
-                 entry->state.store(TileStateCode::Ready);
+                 TileStateCode oldState = entry->state.exchange(TileStateCode::Ready);
+                 if (oldState != TileStateCode::Ready) {
+                     m_readyCount++;
+                 }
              }
         }
     }
@@ -447,6 +456,7 @@ namespace QuickView {
             if (l) l->Clear();
         }
         m_lru.clear();
+        m_readyCount.store(0);
         m_lastViewport = {};
         m_currentLOD = 0;
         m_viewportTilesActive = false;
@@ -464,19 +474,7 @@ namespace QuickView {
     }
     
     int TileManager::GetReadyCount() const {
-        // [Fix] Count only tiles that hold CPU memory (frame with pixels).
-        // Uploaded tiles (VirtualSurface-backed, frame released) should not count
-        // against the budget since they only consume ~64 bytes of metadata.
-        int count = 0;
-        for (const auto& k : m_lru) {
-            // Const-cast needed since GetTileEntry is non-const (returns mutable ptr)
-            auto* self = const_cast<TileManager*>(this);
-            TileEntry* entry = self->GetTileEntry(k);
-            if (entry && entry->data && entry->data->frame && entry->data->frame->pixels) {
-                count++;
-            }
-        }
-        return count;
+        return m_readyCount.load();
     }
 
     TileManager::ViewportProgress TileManager::GetViewportProgress() const {

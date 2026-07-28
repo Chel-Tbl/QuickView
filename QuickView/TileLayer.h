@@ -17,6 +17,7 @@ namespace QuickView {
     struct TileEntry {
         std::atomic<TileStateCode> state{TileStateCode::Empty};
         std::shared_ptr<TileState> data; // Holds the logical tile data (Frame, Texture) - SHARED for RenderEngine access
+        bool inLru = false; // [BugFix] O(1) LRU deduplication flag
 
         TileEntry() = default;
         // shared_ptr is copyable, so TileEntry can be copyable, but atomic is not.

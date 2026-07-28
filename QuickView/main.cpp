@@ -2432,6 +2432,24 @@ bool RenderImageToDComp(HWND hwnd, ImageResource& res, bool isFastUpgrade) {
          isTitan = true;
          fullWidth = GetPaneContext(PaneSlot::Primary).metadata.Width;
          fullHeight = GetPaneContext(PaneSlot::Primary).metadata.Height;
+         
+         // [BugFix] Titan Base Image Aspect Ratio Fix
+         // If the window is maximized, targetWinW/targetWinH are set to the full window dimensions.
+         // DComp will stretch the surface non-uniformly to match fullWidth/fullHeight, causing distortion.
+         // We must force the target surface to exactly match the image's aspect ratio.
+         if (fullWidth > 0 && fullHeight > 0) {
+             float fullAspect = (float)fullWidth / (float)fullHeight;
+             float winAspect = (float)targetWinW / (float)targetWinH;
+             if (fullAspect > winAspect) {
+                 surfW = targetWinW;
+                 surfH = (UINT)(targetWinW / fullAspect);
+             } else {
+                 surfW = (UINT)(targetWinH * fullAspect);
+                 surfH = targetWinH;
+             }
+             if (surfW == 0) surfW = 1;
+             if (surfH == 0) surfH = 1;
+         }
     }
 
     if (!res.isSvg && !isTitan) {
