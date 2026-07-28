@@ -150,7 +150,8 @@ public:
         std::string exifDate; // EXIF DateTaken
     };
 
-    static void SortEntries(std::vector<SortEntry>& entries, int sortOrder, bool sortDesc);
+    static void SortEntries(std::vector<SortEntry>& entries, int sortOrder, bool sortDesc, const std::wstring& dirPath = L"");
+    static std::unordered_map<ImageID, size_t> GetExplorerWindowFileOrder(const std::wstring& targetDir);
 
     // [RAW+JPEG Pairing] Fold same-name RAW + rendered pairs: strict 1:1 per
     // stem (exactly one RAW and exactly one whitelisted rendered still), the

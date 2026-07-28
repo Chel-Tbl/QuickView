@@ -1,5 +1,9 @@
 #include "pch.h"
 #include "FileNavigator.h"
+#include <shlobj.h>
+#include <exdisp.h>
+#include <shobjidl.h>
+#include <wrl/client.h>
 
 extern AppConfig g_config;
 
@@ -169,7 +173,7 @@ void FileNavigator::Initialize(const std::wstring& currentPath, HWND hwnd) {
         sortDesc = false;   // Force Ascending
     }
 
-    SortEntries(entries, sortOrder, sortDesc);
+    SortEntries(entries, sortOrder, sortDesc, dir.wstring());
 
     // [RAW+JPEG Pairing] Fold same-name RAW + rendered pairs (real folders
     // only; archives are never paired)
@@ -745,7 +749,117 @@ void FileNavigator::ApplyRawJpegPairing(std::vector<SortEntry>& entries,
     entries = std::move(kept);
 }
 
-void FileNavigator::SortEntries(std::vector<SortEntry>& entries, int sortOrder, bool sortDesc) {
+std::unordered_map<ImageID, size_t> FileNavigator::GetExplorerWindowFileOrder(const std::wstring& targetDir) {
+    std::unordered_map<ImageID, size_t> orderMap;
+    if (targetDir.empty()) return orderMap;
+
+    namespace fs = std::filesystem;
+    std::wstring canonicalTarget = fs::path(targetDir).lexically_normal().wstring();
+    while (!canonicalTarget.empty() && (canonicalTarget.back() == L'\\' || canonicalTarget.back() == L'/')) {
+        canonicalTarget.pop_back();
+    }
+    std::transform(canonicalTarget.begin(), canonicalTarget.end(), canonicalTarget.begin(), ::towlower);
+
+    Microsoft::WRL::ComPtr<IShellWindows> pShellWindows;
+    HRESULT hr = CoCreateInstance(CLSID_ShellWindows, NULL, CLSCTX_ALL, IID_IShellWindows, (void**)&pShellWindows);
+    if (FAILED(hr) || !pShellWindows) return orderMap;
+
+    long count = 0;
+    pShellWindows->get_Count(&count);
+
+    for (long i = 0; i < count; ++i) {
+        VARIANT vIndex;
+        vIndex.vt = VT_I4;
+        vIndex.lVal = i;
+
+        Microsoft::WRL::ComPtr<IDispatch> pDisp;
+        if (FAILED(pShellWindows->Item(vIndex, &pDisp)) || !pDisp) continue;
+
+        Microsoft::WRL::ComPtr<IWebBrowser2> pWebBrowser;
+        if (FAILED(pDisp.As(&pWebBrowser)) || !pWebBrowser) continue;
+
+        Microsoft::WRL::ComPtr<IServiceProvider> pServiceProvider;
+        if (FAILED(pWebBrowser.As(&pServiceProvider)) || !pServiceProvider) continue;
+
+        Microsoft::WRL::ComPtr<IShellBrowser> pShellBrowser;
+        if (FAILED(pServiceProvider->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&pShellBrowser))) || !pShellBrowser) continue;
+
+        Microsoft::WRL::ComPtr<IShellView> pShellView;
+        if (FAILED(pShellBrowser->QueryActiveShellView(&pShellView)) || !pShellView) continue;
+
+        Microsoft::WRL::ComPtr<IFolderView> pFolderView;
+        if (FAILED(pShellView.As(&pFolderView)) || !pFolderView) continue;
+
+        Microsoft::WRL::ComPtr<IPersistFolder2> pPersistFolder;
+        if (FAILED(pFolderView->GetFolder(IID_PPV_ARGS(&pPersistFolder))) || !pPersistFolder) continue;
+
+        PIDLIST_ABSOLUTE pidlFolder = nullptr;
+        if (FAILED(pPersistFolder->GetCurFolder(&pidlFolder)) || !pidlFolder) continue;
+
+        wchar_t folderPathBuf[MAX_PATH] = { 0 };
+        BOOL gotPath = SHGetPathFromIDListW(pidlFolder, folderPathBuf);
+
+        if (!gotPath) {
+            CoTaskMemFree(pidlFolder);
+            continue;
+        }
+
+        std::wstring currentFolder = fs::path(folderPathBuf).lexically_normal().wstring();
+        while (!currentFolder.empty() && (currentFolder.back() == L'\\' || currentFolder.back() == L'/')) {
+            currentFolder.pop_back();
+        }
+        std::transform(currentFolder.begin(), currentFolder.end(), currentFolder.begin(), ::towlower);
+
+        if (currentFolder == canonicalTarget) {
+            int itemCount = 0;
+            if (SUCCEEDED(pFolderView->ItemCount(SVGIO_ALLVIEW, &itemCount)) && itemCount > 0) {
+                Microsoft::WRL::ComPtr<IShellFolder> pShellFolder;
+                pFolderView->GetFolder(IID_PPV_ARGS(&pShellFolder));
+
+                orderMap.reserve(itemCount);
+                for (int j = 0; j < itemCount; ++j) {
+                    PITEMID_CHILD pidlItem = nullptr;
+                    if (SUCCEEDED(pFolderView->Item(j, &pidlItem)) && pidlItem) {
+                        wchar_t itemPathBuf[MAX_PATH] = { 0 };
+                        bool pathResolved = false;
+
+                        if (pShellFolder) {
+                            STRRET strRet;
+                            if (SUCCEEDED(pShellFolder->GetDisplayNameOf(pidlItem, SHGDN_FORPARSING, &strRet))) {
+                                if (SUCCEEDED(StrRetToBufW(&strRet, pidlItem, itemPathBuf, MAX_PATH))) {
+                                    pathResolved = true;
+                                }
+                            }
+                        }
+
+                        if (!pathResolved) {
+                            PIDLIST_ABSOLUTE pidlFull = ILCombine(pidlFolder, pidlItem);
+                            if (pidlFull) {
+                                SHGetPathFromIDListW(pidlFull, itemPathBuf);
+                                ILFree(pidlFull);
+                                pathResolved = (itemPathBuf[0] != L'\0');
+                            }
+                        }
+
+                        CoTaskMemFree(pidlItem);
+
+                        if (pathResolved) {
+                            ImageID id = ComputePathHash(itemPathBuf);
+                            orderMap.emplace(id, static_cast<size_t>(j));
+                        }
+                    }
+                }
+            }
+            CoTaskMemFree(pidlFolder);
+            break;
+        }
+        CoTaskMemFree(pidlFolder);
+    }
+
+    return orderMap;
+}
+
+void FileNavigator::SortEntries(std::vector<SortEntry>& entries, int sortOrder, bool sortDesc, const std::wstring& dirPath) {
     // Helper to get pointer to null-terminated file/entry name substring to avoid dynamic allocations
     auto getSortNamePtr = [](const std::wstring& path) -> LPCWSTR {
         size_t lastPipe = path.find_last_of(L'|');
@@ -759,13 +873,36 @@ void FileNavigator::SortEntries(std::vector<SortEntry>& entries, int sortOrder, 
         return path.c_str();
     };
 
-    std::sort(entries.begin(), entries.end(), [sortOrder, sortDesc, &getSortNamePtr](const SortEntry& a, const SortEntry& b){
+    std::unordered_map<ImageID, size_t> explorerOrder;
+    if (sortOrder == 0 && !dirPath.empty()) {
+        explorerOrder = GetExplorerWindowFileOrder(dirPath);
+    }
+
+    std::sort(entries.begin(), entries.end(), [sortOrder, sortDesc, &getSortNamePtr, &explorerOrder](const SortEntry& a, const SortEntry& b){
         int cmp = 0;
         LPCWSTR nameA = getSortNamePtr(a.p);
         LPCWSTR nameB = getSortNamePtr(b.p);
         switch (sortOrder) {
+            case 0: // Auto (Explorer Order)
+                if (!explorerOrder.empty()) {
+                    ImageID idA = ComputePathHash(a.p);
+                    ImageID idB = ComputePathHash(b.p);
+                    auto itA = explorerOrder.find(idA);
+                    auto itB = explorerOrder.find(idB);
+                    if (itA != explorerOrder.end() && itB != explorerOrder.end()) {
+                        if (itA->second < itB->second) cmp = -1;
+                        else if (itA->second > itB->second) cmp = 1;
+                    } else if (itA != explorerOrder.end()) {
+                        cmp = -1;
+                    } else if (itB != explorerOrder.end()) {
+                        cmp = 1;
+                    } else {
+                        cmp = StrCmpLogicalW(nameA, nameB);
+                    }
+                    break;
+                }
+                [[fallthrough]];
             case 1: // Name
-            case 0: // Auto (Use Name Natural Sort)
                 cmp = StrCmpLogicalW(nameA, nameB);
                 break;
             case 2: // Modified
@@ -961,7 +1098,7 @@ FileNavigator::DirectoryScanResult FileNavigator::PerformDirectoryScan() {
 
     int sortOrder = g_runtime.SortOrder;
     bool sortDesc = g_runtime.SortDescending;
-    SortEntries(entries, sortOrder, sortDesc);
+    SortEntries(entries, sortOrder, sortDesc, m_watchedDir);
 
     // [RAW+JPEG Pairing] Same fold as Initialize (watcher rescan path)
     if (g_config.PairRawJpeg) {

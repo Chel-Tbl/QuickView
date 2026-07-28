@@ -829,13 +829,13 @@ void ApplyFullScreenZoomMode(HWND hwnd) {
         float winH = (float)rc.bottom;
         if (winW <= 0 || winH <= 0) return;
 
-        // Base fit scale is the ratio needed to fit the image on screen
-        float fitScale = std::min(winW / imgW, winH / imgH);
+        // The raw max scale to fit window
+        float rawFitScale = std::min(winW / imgW, winH / imgH);
 
         // Use true original metadata size to determine 100% target
         float originalW = imgW;
+        VisualState vs = GetVisualState();
         if (GetPaneContext(PaneSlot::Primary).metadata.Width > 0) {
-            VisualState vs = GetVisualState();
             originalW = (float)(vs.IsRotated90 ? GetPaneContext(PaneSlot::Primary).metadata.Height : GetPaneContext(PaneSlot::Primary).metadata.Width);
         }
 
@@ -843,9 +843,10 @@ void ApplyFullScreenZoomMode(HWND hwnd) {
         float renderScaleTarget = originalW / imgW;
 
         // If the 100% size is smaller than the window, use 100% (renderScaleTarget),
-        // which means setting Zoom so that fitScale * Zoom = renderScaleTarget
-        if (fitScale > renderScaleTarget) {
-            GetPaneContext(PaneSlot::Primary).view.Zoom = renderScaleTarget / fitScale;
+        // which means setting Zoom so that baseFit * Zoom = renderScaleTarget
+        if (rawFitScale > renderScaleTarget) {
+            float baseFit = ComputeBaseFitScaleForVisual(vs, winW, winH);
+            GetPaneContext(PaneSlot::Primary).view.Zoom = (baseFit > 0.0001f) ? (renderScaleTarget / baseFit) : 1.0f;
         } else {
             GetPaneContext(PaneSlot::Primary).view.Zoom = computeFitZoomLocal(); // Fit
         }
@@ -3311,7 +3312,10 @@ static float GetCurrentRealScale(HWND hwnd) {
     float winW = (float)(rcClient.right - rcClient.left);
     float winH = (float)(rcClient.bottom - rcClient.top);
 
-    float fitScale = (std::min)(winW / imgW, winH / imgH);
+    float galleryH = (g_gallery.IsPinned() && g_gallery.IsVisible()) ? g_gallery.GetVisualHeight(winH) : 0.0f;
+    float effWinH = std::max(1.0f, winH - galleryH);
+    VisualState vs = GetVisualState();
+    float fitScale = ComputeBaseFitScaleForVisual(vs, winW, effWinH);
     float totalScale = fitScale * GetPaneContext(PaneSlot::Primary).view.Zoom;
     return totalScale * (imgW / originalW); // Real pixel scale
 }
@@ -3477,12 +3481,18 @@ static void PerformZoom100(HWND hwnd, bool allowResizeWindow = true) {
                               SWP_NOZORDER | SWP_NOACTIVATE);
                  
                  RECT rcNew; GetClientRect(hwnd, &rcNew);
-                 float newFitScale = std::min((float)rcNew.right / imgW, (float)rcNew.bottom / imgH);
-                 if (newFitScale > 0) GetPaneContext(PaneSlot::Primary).view.Zoom = renderScaleTarget / newFitScale;
+                 float galleryHNew = (g_gallery.IsPinned() && g_gallery.IsVisible()) ? g_gallery.GetVisualHeight((float)rcNew.bottom) : 0.0f;
+                 float effHNew = std::max(1.0f, (float)rcNew.bottom - galleryHNew);
+                 VisualState vs = GetVisualState();
+                 float newFitScale = ComputeBaseFitScaleForVisual(vs, (float)rcNew.right, effHNew);
+                 if (newFitScale > 0.0001f) GetPaneContext(PaneSlot::Primary).view.Zoom = renderScaleTarget / newFitScale;
             } else {
                 RECT rc; GetClientRect(hwnd, &rc);
-                float fitScale = std::min((float)rc.right / imgW, (float)rc.bottom / imgH);
-                if (fitScale > 0) GetPaneContext(PaneSlot::Primary).view.Zoom = renderScaleTarget / fitScale;
+                float galleryH = (g_gallery.IsPinned() && g_gallery.IsVisible()) ? g_gallery.GetVisualHeight((float)rc.bottom) : 0.0f;
+                float effH = std::max(1.0f, (float)rc.bottom - galleryH);
+                VisualState vs = GetVisualState();
+                float fitScale = ComputeBaseFitScaleForVisual(vs, (float)rc.right, effH);
+                if (fitScale > 0.0001f) GetPaneContext(PaneSlot::Primary).view.Zoom = renderScaleTarget / fitScale;
             }
 
             GetPaneContext(PaneSlot::Primary).view.PanX = 0;
