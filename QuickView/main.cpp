@@ -12853,6 +12853,7 @@ void StartNavigation(HWND hwnd, std::wstring path, [[maybe_unused]] bool showOSD
 
     if (!g_imageEngine || path.empty()) return;
     g_isLoading = true; // [Fix] Start loading state machine
+    SetTimer(hwnd, 995, 16, nullptr); // [Fix] ~60 FPS UI Heartbeat for progress bar (runs for ALL loads to avoid WM_PAINT starvation)
 
     // [Phase 3] Increment token FIRST (deprecated, kept for backward compatibility)
     uint64_t myToken = ++g_currentNavToken;
@@ -12921,9 +12922,6 @@ void StartNavigation(HWND hwnd, std::wstring path, [[maybe_unused]] bool showOSD
         fileSize = GetPaneContext(PaneSlot::Primary).navigator.GetFileSize(idx);
     }
     g_isNavigatingToTitan = ShouldUsePhase2TitanDebounce(path, fileSize);
-    if (g_isNavigatingToTitan) {
-        SetTimer(hwnd, 995, 16, nullptr); // ~60 FPS UI Heartbeat for progress bar
-    }
     
     g_isCrossFading = false;
     g_ghostBitmap = nullptr; // Clear previous ghost

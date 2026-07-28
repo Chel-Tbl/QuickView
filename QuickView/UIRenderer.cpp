@@ -1525,14 +1525,14 @@ void UIRenderer::DrawDecodingStatus(ID2D1DeviceContext* dc, HWND hwnd) {
     }
     m_decodeWasActive = decodingActive;
 
-    bool shouldAnimate = false;
+
     float alpha = 0.0f;
     float progress = 0.0f;
     bool scanningMode = false;
     bool finishingMode = false;
 
     if (decodingActive) {
-        shouldAnimate = true;
+
         alpha = 0.90f;
 
         if (hasTileProgressGap && readyTiles > 0) {
@@ -1559,7 +1559,7 @@ void UIRenderer::DrawDecodingStatus(ID2D1DeviceContext* dc, HWND hwnd) {
             return;
         }
         finishingMode = true;
-        shouldAnimate = true;
+
         alpha = 1.0f - ((float)elapsed / 500.0f);
         progress = 1.0f;
     } else {
@@ -1701,10 +1701,6 @@ void UIRenderer::DrawDecodingStatus(ID2D1DeviceContext* dc, HWND hwnd) {
             dc->CreateSolidColorBrush(headColor, &headBrush);
             dc->FillRectangle(headRect, headBrush.Get());
         }
-    }
-
-    if (shouldAnimate) {
-        InvalidateRect(hwnd, nullptr, FALSE);
     }
 }
 
