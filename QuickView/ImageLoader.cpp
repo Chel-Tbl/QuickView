@@ -9875,35 +9875,74 @@ HRESULT CImageLoader::GetImageInfoFast(LPCWSTR filePath, ImageInfo *pInfo) {
 
     // Read IFD0 offset (at byte 4-7)
     uint32_t ifdOffset = read32(4);
-    if (ifdOffset > 0 && ifdOffset + 2 < size) {
-      uint16_t numEntries = read16(ifdOffset);
-
+    if (ifdOffset > 0) {
       int w = 0, h = 0;
-      for (uint16_t i = 0;
-           i < numEntries && (ifdOffset + 2 + i * 12 + 12) <= size; ++i) {
-        size_t entryOff = ifdOffset + 2 + i * 12;
-        uint16_t tag = read16(entryOff);
-        uint16_t type = read16(entryOff + 2);
-        uint32_t count = read32(entryOff + 4);
+      bool readSuccess = false;
 
-        // Value or offset: for small values (1-4 bytes), value is inline at
-        // entryOff+8
-        uint32_t val = 0;
-        if (type == 3 && count == 1)
-          val = read16(entryOff + 8); // SHORT
-        else if (type == 4 && count == 1)
-          val = read32(entryOff + 8); // LONG
+      if (ifdOffset + 2 < size) {
+        uint16_t numEntries = read16(ifdOffset);
+        for (uint16_t i = 0; i < numEntries && (ifdOffset + 2 + i * 12 + 12) <= size; ++i) {
+          size_t entryOff = ifdOffset + 2 + i * 12;
+          uint16_t tag = read16(entryOff);
+          uint16_t type = read16(entryOff + 2);
+          uint32_t count = read32(entryOff + 4);
 
-        if (tag == 256)
-          w = (int)val; // ImageWidth
-        if (tag == 257)
-          h = (int)val; // ImageHeight
+          uint32_t val = 0;
+          if (type == 3 && count == 1) val = read16(entryOff + 8);
+          else if (type == 4 && count == 1) val = read32(entryOff + 8);
 
-        if (w > 0 && h > 0)
-          break;
+          if (tag == 256) w = (int)val;
+          if (tag == 257) h = (int)val;
+          if (w > 0 && h > 0) break;
+        }
+        readSuccess = true;
+      } else {
+        // IFD is outside the 64KB chunk. We must open the file and read it.
+        FILE* f = nullptr;
+        if (_wfopen_s(&f, filePath, L"rb") == 0 && f != nullptr) {
+          _fseeki64(f, ifdOffset, SEEK_SET);
+          uint8_t countBuf[2];
+          if (fread(countBuf, 1, 2, f) == 2) {
+            uint16_t numEntries = isTiffLE ? (countBuf[0] | ((uint16_t)countBuf[1] << 8)) : (((uint16_t)countBuf[0] << 8) | countBuf[1]);
+            size_t toRead = static_cast<size_t>(numEntries) * 12;
+            // Guard against insane numEntries to prevent OOM
+            if (toRead > 0 && toRead < 1024 * 1024) {
+              std::vector<uint8_t> ifdBuf(toRead);
+              if (fread(ifdBuf.data(), 1, toRead, f) == toRead) {
+                readSuccess = true;
+                auto read16_ifd = [&](size_t off) -> uint16_t {
+                  if (off + 2 > ifdBuf.size()) return 0;
+                  return isTiffLE ? (ifdBuf[off] | ((uint16_t)ifdBuf[off + 1] << 8)) : (((uint16_t)ifdBuf[off] << 8) | ifdBuf[off + 1]);
+                };
+                auto read32_ifd = [&](size_t off) -> uint32_t {
+                  if (off + 4 > ifdBuf.size()) return 0;
+                  return isTiffLE ? (ifdBuf[off] | ((uint32_t)ifdBuf[off + 1] << 8) | ((uint32_t)ifdBuf[off + 2] << 16) | ((uint32_t)ifdBuf[off + 3] << 24)) :
+                                    (((uint32_t)ifdBuf[off] << 24) | ((uint32_t)ifdBuf[off + 1] << 16) | ((uint32_t)ifdBuf[off + 2] << 8) | ifdBuf[off + 3]);
+                };
+
+                for (uint16_t i = 0; i < numEntries; ++i) {
+                  size_t entryOff = i * 12;
+                  if (entryOff + 12 > ifdBuf.size()) break;
+                  uint16_t tag = read16_ifd(entryOff);
+                  uint16_t type = read16_ifd(entryOff + 2);
+                  uint32_t count = read32_ifd(entryOff + 4);
+
+                  uint32_t val = 0;
+                  if (type == 3 && count == 1) val = read16_ifd(entryOff + 8);
+                  else if (type == 4 && count == 1) val = read32_ifd(entryOff + 8);
+
+                  if (tag == 256) w = (int)val;
+                  if (tag == 257) h = (int)val;
+                  if (w > 0 && h > 0) break;
+                }
+              }
+            }
+          }
+          fclose(f);
+        }
       }
 
-      if (w > 0 && h > 0) {
+      if (readSuccess && w > 0 && h > 0) {
         pInfo->width = w;
         pInfo->height = h;
         return S_OK;

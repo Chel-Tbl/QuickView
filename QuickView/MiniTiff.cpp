@@ -42,6 +42,7 @@ struct TiffImageDesc {
     bool isTiled = false;
     uint32_t tileWidth = 0;
     uint32_t tileHeight = 0;
+    bool isLE = true;
 
     std::vector<uint64_t> offsets;
     std::vector<uint64_t> byteCounts;
@@ -124,6 +125,7 @@ static Status ParseTiffIFD(const uint8_t* data, size_t size, TiffImageDesc& desc
     } else {
         return Status::NotTiff;
     }
+    desc.isLE = isLE;
 
     auto read16 = [&](size_t off) -> uint16_t {
         if (off + 2 > size) return 0;
@@ -380,8 +382,8 @@ static Status CapabilityGate(const TiffImageDesc& desc) {
         return Status::Unsupported;
     }
 
-    // Only 8-bit supported
-    if (desc.bitsPerSample != 8) {
+    // 8-bit and 16-bit supported (16-bit will be downsampled to 8-bit)
+    if (desc.bitsPerSample != 8 && desc.bitsPerSample != 16) {
         return Status::Unsupported;
     }
 
@@ -440,7 +442,11 @@ HRESULT LoadRegion(const uint8_t* data, size_t size,
     std::memset(pixels, 0, totalBytes);
 
     uint32_t samples = desc.samples;
-    uint32_t rowBytes = desc.width * samples;
+    uint32_t bytesPerSample = desc.bitsPerSample / 8;
+    if (bytesPerSample == 0) bytesPerSample = 1;
+    uint32_t highByteOffset = (bytesPerSample == 2) ? (desc.isLE ? 1 : 0) : 0;
+    uint32_t pixelStride = samples * bytesPerSample;
+    uint32_t rowBytes = desc.width * pixelStride;
     uint16_t predictor = desc.predictor;
     uint16_t photometric = desc.photometric;
 
@@ -536,10 +542,10 @@ HRESULT LoadRegion(const uint8_t* data, size_t size,
                     }
                     uint8_t* mutableData = const_cast<uint8_t*>(tileData);
                     for (int y = 0; y < (int)desc.tileHeight; ++y) {
-                        uint8_t* rowData = mutableData + y * (desc.tileWidth * samples);
+                        uint8_t* rowData = mutableData + y * (desc.tileWidth * pixelStride);
                         for (int x = 1; x < (int)desc.tileWidth; ++x) {
-                            for (uint32_t c = 0; c < samples; ++c) {
-                                rowData[x * samples + c] += rowData[(x - 1) * samples + c];
+                            for (uint32_t c = 0; c < pixelStride; ++c) {
+                                rowData[x * pixelStride + c] += rowData[(x - 1) * pixelStride + c];
                             }
                         }
                     }
@@ -549,28 +555,28 @@ HRESULT LoadRegion(const uint8_t* data, size_t size,
                 for (int y = intersectY; y < intersectEndY; ++y) {
                     int localY = y - tileY;
                     int outY = y - cropY;
-                    const uint8_t* srcRow = tileData + localY * (desc.tileWidth * samples);
+                    const uint8_t* srcRow = tileData + localY * (desc.tileWidth * pixelStride);
                     uint8_t* dstRow = pixels + outY * outStride;
 
                     if (photometric == 0 || photometric == 1) {
                         for (int x = intersectX; x < intersectEndX; ++x) {
                             int localX = x - tileX;
                             int outX = x - cropX;
-                            uint8_t val = srcRow[localX * samples];
+                            uint8_t val = srcRow[localX * pixelStride + highByteOffset];
                             if (photometric == 0) val = 255 - val;
                             dstRow[outX * 4 + 0] = val;
                             dstRow[outX * 4 + 1] = val;
                             dstRow[outX * 4 + 2] = val;
-                            dstRow[outX * 4 + 3] = (samples > 1) ? srcRow[localX * samples + 1] : 255;
+                            dstRow[outX * 4 + 3] = (samples > 1) ? srcRow[localX * pixelStride + bytesPerSample + highByteOffset] : 255;
                         }
                     } else if (photometric == 2) {
                         for (int x = intersectX; x < intersectEndX; ++x) {
                             int localX = x - tileX;
                             int outX = x - cropX;
-                            uint8_t r = srcRow[localX * samples + 0];
-                            uint8_t g = srcRow[localX * samples + 1];
-                            uint8_t b = srcRow[localX * samples + 2];
-                            uint8_t a = (samples >= 4) ? srcRow[localX * samples + 3] : 255;
+                            uint8_t r = srcRow[localX * pixelStride + 0 * bytesPerSample + highByteOffset];
+                            uint8_t g = srcRow[localX * pixelStride + 1 * bytesPerSample + highByteOffset];
+                            uint8_t b = srcRow[localX * pixelStride + 2 * bytesPerSample + highByteOffset];
+                            uint8_t a = (samples >= 4) ? srcRow[localX * pixelStride + 3 * bytesPerSample + highByteOffset] : 255;
                             if (samples >= 4 && desc.extraSamples != 1) {
                                 r = static_cast<uint8_t>((r * a + 127) / 255);
                                 g = static_cast<uint8_t>((g * a + 127) / 255);
@@ -586,7 +592,7 @@ HRESULT LoadRegion(const uint8_t* data, size_t size,
                             for (int x = intersectX; x < intersectEndX; ++x) {
                                 int localX = x - tileX;
                                 int outX = x - cropX;
-                                uint8_t idx = srcRow[localX];
+                                uint8_t idx = srcRow[localX * pixelStride + highByteOffset];
                                 uint8_t r = static_cast<uint8_t>(desc.colorMap[idx] / 256);
                                 uint8_t g = static_cast<uint8_t>(desc.colorMap[idx + 256] / 256);
                                 uint8_t b = static_cast<uint8_t>(desc.colorMap[idx + 512] / 256);
@@ -602,7 +608,23 @@ HRESULT LoadRegion(const uint8_t* data, size_t size,
                         int localXStart = intersectX - tileX;
                         int outXStart = intersectX - cropX;
                         int runWidth = intersectEndX - intersectX;
-                        ConvertCmykToBgra(srcRow + localXStart * samples, dstRow + outXStart * 4, runWidth, samples);
+                        if (bytesPerSample == 1) {
+                            ConvertCmykToBgra(srcRow + localXStart * pixelStride, dstRow + outXStart * 4, runWidth, samples);
+                        } else {
+                            for (int dx = 0; dx < runWidth; ++dx) {
+                                uint8_t c = srcRow[(localXStart + dx) * pixelStride + 0 * bytesPerSample + highByteOffset];
+                                uint8_t m = srcRow[(localXStart + dx) * pixelStride + 1 * bytesPerSample + highByteOffset];
+                                uint8_t ye = srcRow[(localXStart + dx) * pixelStride + 2 * bytesPerSample + highByteOffset];
+                                uint8_t k = (samples >= 4) ? srcRow[(localXStart + dx) * pixelStride + 3 * bytesPerSample + highByteOffset] : 0;
+                                uint8_t r = (255 - c) * (255 - k) / 255;
+                                uint8_t g = (255 - m) * (255 - k) / 255;
+                                uint8_t b = (255 - ye) * (255 - k) / 255;
+                                dstRow[(outXStart + dx) * 4 + 0] = b;
+                                dstRow[(outXStart + dx) * 4 + 1] = g;
+                                dstRow[(outXStart + dx) * 4 + 2] = r;
+                                dstRow[(outXStart + dx) * 4 + 3] = 255;
+                            }
+                        }
                     }
                 }
             }
@@ -698,8 +720,8 @@ HRESULT LoadRegion(const uint8_t* data, size_t size,
                     for (int y = 0; y < (int)unitH; ++y) {
                         uint8_t* rowData = mutableData + y * rowBytes;
                         for (int x = 1; x < (int)desc.width; ++x) {
-                            for (uint32_t c = 0; c < samples; ++c) {
-                                rowData[x * samples + c] += rowData[(x - 1) * samples + c];
+                            for (uint32_t c = 0; c < pixelStride; ++c) {
+                                rowData[x * pixelStride + c] += rowData[(x - 1) * pixelStride + c];
                             }
                         }
                     }
@@ -715,20 +737,20 @@ HRESULT LoadRegion(const uint8_t* data, size_t size,
                     if (photometric == 0 || photometric == 1) {
                         for (int x = cropX; x < cropX + cropW; ++x) {
                             int outX = x - cropX;
-                            uint8_t val = srcRow[x * samples];
+                            uint8_t val = srcRow[x * pixelStride + highByteOffset];
                             if (photometric == 0) val = 255 - val;
                             dstRow[outX * 4 + 0] = val;
                             dstRow[outX * 4 + 1] = val;
                             dstRow[outX * 4 + 2] = val;
-                            dstRow[outX * 4 + 3] = (samples > 1) ? srcRow[x * samples + 1] : 255;
+                            dstRow[outX * 4 + 3] = (samples > 1) ? srcRow[x * pixelStride + bytesPerSample + highByteOffset] : 255;
                         }
                     } else if (photometric == 2) {
                         for (int x = cropX; x < cropX + cropW; ++x) {
                             int outX = x - cropX;
-                            uint8_t r = srcRow[x * samples + 0];
-                            uint8_t g = srcRow[x * samples + 1];
-                            uint8_t b = srcRow[x * samples + 2];
-                            uint8_t a = (samples >= 4) ? srcRow[x * samples + 3] : 255;
+                            uint8_t r = srcRow[x * pixelStride + 0 * bytesPerSample + highByteOffset];
+                            uint8_t g = srcRow[x * pixelStride + 1 * bytesPerSample + highByteOffset];
+                            uint8_t b = srcRow[x * pixelStride + 2 * bytesPerSample + highByteOffset];
+                            uint8_t a = (samples >= 4) ? srcRow[x * pixelStride + 3 * bytesPerSample + highByteOffset] : 255;
                             if (samples >= 4 && desc.extraSamples != 1) {
                                 r = static_cast<uint8_t>((r * a + 127) / 255);
                                 g = static_cast<uint8_t>((g * a + 127) / 255);
@@ -743,7 +765,7 @@ HRESULT LoadRegion(const uint8_t* data, size_t size,
                         if (desc.colorMap.size() >= 768) {
                             for (int x = cropX; x < cropX + cropW; ++x) {
                                 int outX = x - cropX;
-                                uint8_t idx = srcRow[x];
+                                uint8_t idx = srcRow[x * pixelStride + highByteOffset];
                                 uint8_t r = static_cast<uint8_t>(desc.colorMap[idx] / 256);
                                 uint8_t g = static_cast<uint8_t>(desc.colorMap[idx + 256] / 256);
                                 uint8_t b = static_cast<uint8_t>(desc.colorMap[idx + 512] / 256);
@@ -756,7 +778,23 @@ HRESULT LoadRegion(const uint8_t* data, size_t size,
                             decodeFailed = true;
                         }
                     } else if (photometric == 5) {
-                        ConvertCmykToBgra(srcRow + cropX * samples, dstRow, cropW, samples);
+                        if (bytesPerSample == 1) {
+                            ConvertCmykToBgra(srcRow + cropX * pixelStride, dstRow, cropW, samples);
+                        } else {
+                            for (int dx = 0; dx < cropW; ++dx) {
+                                uint8_t c = srcRow[(cropX + dx) * pixelStride + 0 * bytesPerSample + highByteOffset];
+                                uint8_t m = srcRow[(cropX + dx) * pixelStride + 1 * bytesPerSample + highByteOffset];
+                                uint8_t ye = srcRow[(cropX + dx) * pixelStride + 2 * bytesPerSample + highByteOffset];
+                                uint8_t k = (samples >= 4) ? srcRow[(cropX + dx) * pixelStride + 3 * bytesPerSample + highByteOffset] : 0;
+                                uint8_t r = (255 - c) * (255 - k) / 255;
+                                uint8_t g = (255 - m) * (255 - k) / 255;
+                                uint8_t b = (255 - ye) * (255 - k) / 255;
+                                dstRow[dx * 4 + 0] = b;
+                                dstRow[dx * 4 + 1] = g;
+                                dstRow[dx * 4 + 2] = r;
+                                dstRow[dx * 4 + 3] = 255;
+                            }
+                        }
                     }
                 }
             }

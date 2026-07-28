@@ -239,6 +239,7 @@ namespace QuickView {
             case TitanFormat::JXL:
             case TitanFormat::WEBP:
             case TitanFormat::AVIF:
+            case TitanFormat::TIFF:
             case TitanFormat::BMP:
             case TitanFormat::TGA:
             case TitanFormat::GIF:
