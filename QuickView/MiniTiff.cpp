@@ -427,14 +427,11 @@ HRESULT LoadRegion(const uint8_t* data, size_t size,
     }
 
     // Clamp crop parameters to valid boundaries
-    int cropX = std::max(0, rectX);
-    int cropY = std::max(0, rectY);
-    int cropEndX = std::min(static_cast<int>(desc.width), rectX + rectW);
-    int cropEndY = std::min(static_cast<int>(desc.height), rectY + rectH);
-    int cropW = cropEndX - cropX;
-    int cropH = cropEndY - cropY;
-
-    if (cropW <= 0 || cropH <= 0) return S_OK;
+    cropX = (std::max)(0, cropX);
+    cropY = (std::max)(0, cropY);
+    cropW = (std::min)(cropW, static_cast<int>(desc.width) - cropX);
+    cropH = (std::min)(cropH, static_cast<int>(desc.height) - cropY);
+    if (cropW <= 0 || cropH <= 0) return E_INVALIDARG;
 
     uint32_t samples = desc.samples;
     uint32_t bytesPerSample = desc.bitsPerSample / 8;
