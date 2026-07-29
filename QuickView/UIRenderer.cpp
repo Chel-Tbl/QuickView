@@ -15,6 +15,15 @@
 #include "ImageLoaderSimd.h"
 #include "SettingsOverlay.h"
 #include "PrintPreviewUI.h"
+#include <functional> // For std::hash
+
+namespace {
+    template <class T>
+    inline void CombineHash(uint64_t& seed, const T& v) {
+        std::hash<T> hasher;
+        seed ^= hasher(v) + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+    }
+}
 #include "Toolbar.h"
 #include <algorithm>
 #include <cmath>
@@ -198,8 +207,9 @@ void UIRenderer::UpdateMetadata(const CImageLoader::ImageMetadata& metadata, con
     m_metadata = metadata;
     m_imagePath = imagePath;
     g_imagePath = imagePath; 
-    m_lastInfoImagePath = L""; // Force cache invalidation
-    m_lastCompactInfoImagePath = L""; // Force compact cache invalidation
+    m_lastInfoStateHash = 0; // Force cache invalidation
+    m_lastCompactInfoStateHash = 0; // Force compact cache invalidation
+    m_lastCompareStateHash = 0; // Force compare cache invalidation
     BuildInfoGrid();  // Rebuild grid when metadata changes
     MarkStaticDirty();
 }
@@ -2722,16 +2732,21 @@ D2D1_SIZE_F UIRenderer::GetRequiredInfoPanelSize() const {
 std::wstring UIRenderer::BuildCompactInfoText(float maxFileW) const {
     int currentZoom = GetCurrentZoomPercent();
     bool hasHistR = !g_currentMetadata.HistR.empty();
-    if (m_lastCompactInfoZoom == currentZoom && 
-        m_lastCompactInfoImagePath == g_imagePath && 
-        m_lastCompactInfoConfig == g_config.InfoPanelLiteItemsNormal && 
-        m_lastCompactInfoMaxFileW == maxFileW &&
-        m_lastCompactInfoFullLoaded == g_currentMetadata.IsFullMetadataLoaded &&
-        m_lastCompactInfoHasSharpness == g_currentMetadata.HasSharpness &&
-        m_lastCompactInfoHasEntropy == g_currentMetadata.HasEntropy &&
-        m_lastCompactInfoHasHistR == hasHistR) {
+    
+    uint64_t stateHash = 0;
+    CombineHash(stateHash, currentZoom);
+    CombineHash(stateHash, g_imagePath);
+    CombineHash(stateHash, g_config.InfoPanelLiteItemsNormal);
+    CombineHash(stateHash, maxFileW);
+    CombineHash(stateHash, g_currentMetadata.IsFullMetadataLoaded);
+    CombineHash(stateHash, g_currentMetadata.HasSharpness);
+    CombineHash(stateHash, g_currentMetadata.HasEntropy);
+    CombineHash(stateHash, hasHistR);
+
+    if (m_lastCompactInfoStateHash == stateHash && !m_lastCompactInfoText.empty()) {
         return m_lastCompactInfoText;
     }
+    
     std::vector<std::wstring> items = SplitString(g_config.InfoPanelLiteItemsNormal, L',');
     std::vector<std::wstring> parts;
     for (const auto& itemKey : items) {
@@ -2748,16 +2763,12 @@ std::wstring UIRenderer::BuildCompactInfoText(float maxFileW) const {
         info += parts[i];
     }
     
+    if (!info.empty() && info.back() == L' ' && info.length() >= 3) {
+        info = info.substr(0, info.length() - 3);
+    }
     
-    const_cast<UIRenderer*>(this)->m_lastCompactInfoZoom = currentZoom;
-    const_cast<UIRenderer*>(this)->m_lastCompactInfoImagePath = g_imagePath;
-    const_cast<UIRenderer*>(this)->m_lastCompactInfoConfig = g_config.InfoPanelLiteItemsNormal;
-    const_cast<UIRenderer*>(this)->m_lastCompactInfoMaxFileW = maxFileW;
+    const_cast<UIRenderer*>(this)->m_lastCompactInfoStateHash = stateHash;
     const_cast<UIRenderer*>(this)->m_lastCompactInfoText = info;
-    const_cast<UIRenderer*>(this)->m_lastCompactInfoFullLoaded = g_currentMetadata.IsFullMetadataLoaded;
-    const_cast<UIRenderer*>(this)->m_lastCompactInfoHasSharpness = g_currentMetadata.HasSharpness;
-    const_cast<UIRenderer*>(this)->m_lastCompactInfoHasEntropy = g_currentMetadata.HasEntropy;
-    const_cast<UIRenderer*>(this)->m_lastCompactInfoHasHistR = hasHistR;
     
     return info;
 }
@@ -3374,24 +3385,21 @@ namespace {
 void UIRenderer::BuildInfoGrid() {
     int currentZoom = GetCurrentZoomPercent();
     bool hasHistR = !g_currentMetadata.HistR.empty();
-    if (!m_infoGrid.empty() && 
-        m_lastInfoZoom == currentZoom && 
-        m_lastInfoImagePath == g_imagePath && 
-        m_lastInfoConfig == g_config.InfoPanelFullItemsNormal &&
-        m_lastInfoFullLoaded == g_currentMetadata.IsFullMetadataLoaded &&
-        m_lastInfoHasSharpness == g_currentMetadata.HasSharpness &&
-        m_lastInfoHasEntropy == g_currentMetadata.HasEntropy &&
-        m_lastInfoHasHistR == hasHistR) {
+    
+    uint64_t stateHash = 0;
+    CombineHash(stateHash, currentZoom);
+    CombineHash(stateHash, g_imagePath);
+    CombineHash(stateHash, g_config.InfoPanelFullItemsNormal);
+    CombineHash(stateHash, g_currentMetadata.IsFullMetadataLoaded);
+    CombineHash(stateHash, g_currentMetadata.HasSharpness);
+    CombineHash(stateHash, g_currentMetadata.HasEntropy);
+    CombineHash(stateHash, hasHistR);
+
+    if (!m_infoGrid.empty() && m_lastInfoStateHash == stateHash) {
         return; // Cache hit
     }
 
-    m_lastInfoZoom = currentZoom;
-    m_lastInfoImagePath = g_imagePath;
-    m_lastInfoConfig = g_config.InfoPanelFullItemsNormal;
-    m_lastInfoFullLoaded = g_currentMetadata.IsFullMetadataLoaded;
-    m_lastInfoHasSharpness = g_currentMetadata.HasSharpness;
-    m_lastInfoHasEntropy = g_currentMetadata.HasEntropy;
-    m_lastInfoHasHistR = hasHistR;
+    m_lastInfoStateHash = stateHash;
     
     m_hdrDetailsToggleRect = {};
     m_infoGrid = BuildGridRows(g_currentMetadata, g_imagePath, false);
@@ -4844,32 +4852,23 @@ void UIRenderer::DrawCompareInfoHUD(ID2D1DeviceContext* dc) {
     bool leftHistR = !leftMeta.HistR.empty();
     bool rightHistR = !rightMeta.HistR.empty();
     
-    if (m_compareLeftRows.empty() || m_lastCompareZoom != currentZoom || 
-        m_lastCompareLeftPath != leftMeta.SourcePath || 
-        m_lastCompareRightPath != rightMeta.SourcePath || 
-        m_lastCompareConfig != g_config.InfoPanelFullItemsCompare ||
-        m_lastCompareLeftFullLoaded != leftMeta.IsFullMetadataLoaded ||
-        m_lastCompareRightFullLoaded != rightMeta.IsFullMetadataLoaded ||
-        m_lastCompareLeftHasHistR != leftHistR ||
-        m_lastCompareRightHasHistR != rightHistR ||
-        m_lastCompareLeftHasSharpness != leftMeta.HasSharpness ||
-        m_lastCompareRightHasSharpness != rightMeta.HasSharpness ||
-        m_lastCompareLeftHasEntropy != leftMeta.HasEntropy ||
-        m_lastCompareRightHasEntropy != rightMeta.HasEntropy) {
+    uint64_t stateHash = 0;
+    CombineHash(stateHash, currentZoom);
+    CombineHash(stateHash, leftMeta.SourcePath);
+    CombineHash(stateHash, rightMeta.SourcePath);
+    CombineHash(stateHash, g_config.InfoPanelFullItemsCompare);
+    CombineHash(stateHash, leftMeta.IsFullMetadataLoaded);
+    CombineHash(stateHash, rightMeta.IsFullMetadataLoaded);
+    CombineHash(stateHash, leftHistR);
+    CombineHash(stateHash, rightHistR);
+    CombineHash(stateHash, leftMeta.HasSharpness);
+    CombineHash(stateHash, rightMeta.HasSharpness);
+    CombineHash(stateHash, leftMeta.HasEntropy);
+    CombineHash(stateHash, rightMeta.HasEntropy);
+    
+    if (m_compareLeftRows.empty() || m_lastCompareStateHash != stateHash) {
         
-        m_lastCompareZoom = currentZoom;
-        m_lastCompareLeftPath = leftMeta.SourcePath;
-        m_lastCompareRightPath = rightMeta.SourcePath;
-        m_lastCompareConfig = g_config.InfoPanelFullItemsCompare;
-        
-        m_lastCompareLeftFullLoaded = leftMeta.IsFullMetadataLoaded;
-        m_lastCompareRightFullLoaded = rightMeta.IsFullMetadataLoaded;
-        m_lastCompareLeftHasHistR = leftHistR;
-        m_lastCompareRightHasHistR = rightHistR;
-        m_lastCompareLeftHasSharpness = leftMeta.HasSharpness;
-        m_lastCompareRightHasSharpness = rightMeta.HasSharpness;
-        m_lastCompareLeftHasEntropy = leftMeta.HasEntropy;
-        m_lastCompareRightHasEntropy = rightMeta.HasEntropy;
+        m_lastCompareStateHash = stateHash;
         
         m_compareLeftRows = BuildGridRows(leftMeta, leftMeta.SourcePath, true, leftIndex, leftTotal);
         m_compareRightRows = BuildGridRows(rightMeta, rightMeta.SourcePath, true, rightIndex, rightTotal);

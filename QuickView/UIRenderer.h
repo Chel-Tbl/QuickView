@@ -275,39 +275,15 @@ private:
     D2D1_RECT_F m_panelCloseRect = {};
     D2D1_RECT_F m_hdrDetailsToggleRect = {};
     
-    // Cache tracking for info grid
-    int m_lastInfoZoom = -1;
-    std::wstring m_lastInfoImagePath;
-    std::wstring m_lastInfoConfig;
-    bool m_lastInfoFullLoaded = false;
-    bool m_lastInfoHasSharpness = false;
-    bool m_lastInfoHasEntropy = false;
-    bool m_lastInfoHasHistR = false;
+    // Cache tracking for full info
+    uint64_t m_lastInfoStateHash = 0;
     
     // Cache tracking for compact info
-    int m_lastCompactInfoZoom = -1;
-    std::wstring m_lastCompactInfoImagePath;
-    std::wstring m_lastCompactInfoConfig;
-    bool m_lastCompactInfoFullLoaded = false;
-    bool m_lastCompactInfoHasSharpness = false;
-    bool m_lastCompactInfoHasEntropy = false;
-    bool m_lastCompactInfoHasHistR = false;
-    float m_lastCompactInfoMaxFileW = -1.0f;
+    uint64_t m_lastCompactInfoStateHash = 0;
     std::wstring m_lastCompactInfoText;
     
     // Cache tracking for compare info
-    int m_lastCompareZoom = -1;
-    std::wstring m_lastCompareLeftPath;
-    std::wstring m_lastCompareRightPath;
-    std::wstring m_lastCompareConfig;
-    bool m_lastCompareLeftFullLoaded = false;
-    bool m_lastCompareRightFullLoaded = false;
-    bool m_lastCompareLeftHasHistR = false;
-    bool m_lastCompareRightHasHistR = false;
-    bool m_lastCompareLeftHasSharpness = false;
-    bool m_lastCompareRightHasSharpness = false;
-    bool m_lastCompareLeftHasEntropy = false;
-    bool m_lastCompareRightHasEntropy = false;
+    uint64_t m_lastCompareStateHash = 0;
     std::vector<InfoRow> m_compareLeftRows;
     std::vector<InfoRow> m_compareRightRows;
     
