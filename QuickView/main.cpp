@@ -4427,6 +4427,7 @@ void SaveConfig() {
     WriteConfigInt(L"Controls", L"MiddleClickAction", (int)g_config.MiddleClickAction, iniPath.c_str());
     WriteConfigBool(L"Controls", L"EdgeNavClick", g_config.EdgeNavClick, iniPath.c_str());
     WriteConfigInt(L"Controls", L"GalleryTriggerMode", g_config.GalleryTriggerMode, iniPath.c_str());
+    WriteConfigBool(L"Controls", L"GalleryKeepVisibleOnThumbnailClick", g_config.GalleryKeepVisibleOnThumbnailClick, iniPath.c_str());
     WriteConfigFloat(L"Controls", L"GalleryTriggerAreaHeight", g_config.GalleryTriggerAreaHeight, iniPath.c_str());
     WriteConfigFloat(L"Controls", L"GalleryDwellTime", g_config.GalleryDwellTime, iniPath.c_str());
     WriteConfigFloat(L"Controls", L"GalleryExitDelay", g_config.GalleryExitDelay, iniPath.c_str());
@@ -4748,6 +4749,7 @@ void LoadConfig() {
     g_config.MiddleClickIndex = (g_config.MiddleClickAction == MouseAction::ExitApp) ? 1 : 0;
     g_config.EdgeNavClick = GetPrivateProfileIntW(L"Controls", L"EdgeNavClick", 1, iniPath.c_str()) != 0;
     g_config.GalleryTriggerMode = GetPrivateProfileIntW(L"Controls", L"GalleryTriggerMode", 1, iniPath.c_str());
+    g_config.GalleryKeepVisibleOnThumbnailClick = GetPrivateProfileIntW(L"Controls", L"GalleryKeepVisibleOnThumbnailClick", 0, iniPath.c_str()) != 0;
     GetPrivateProfileStringW(L"Controls", L"GalleryTriggerAreaHeight", L"20.0", buf, 64, iniPath.c_str());
     g_config.GalleryTriggerAreaHeight = std::clamp((float)_wtof(buf), 5.0f, 100.0f);
     GetPrivateProfileStringW(L"Controls", L"GalleryDwellTime", L"0.18", buf, 64, iniPath.c_str());

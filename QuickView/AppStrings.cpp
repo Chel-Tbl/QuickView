@@ -538,6 +538,8 @@ const wchar_t *HUD_Label_Low = nullptr;
 const wchar_t *HUD_Label_Ref = nullptr;
 const wchar_t *Settings_Header_GalleryTrigger = nullptr;
 const wchar_t *Settings_Label_GalleryTriggerMode = nullptr;
+const wchar_t *Settings_Label_KeepGalleryVisibleOnThumbnailClick = nullptr;
+const wchar_t *Settings_Tooltip_KeepGalleryVisibleOnThumbnailClick = nullptr;
 const wchar_t *Settings_Option_GalleryTriggerAuto = nullptr;
 const wchar_t *Settings_Option_GalleryTriggerDelay = nullptr;
 const wchar_t *Settings_Option_GalleryTriggerClick = nullptr;
@@ -1085,6 +1087,8 @@ struct LanguageTable {
     const wchar_t *HUD_Label_Ref;
     const wchar_t *Settings_Header_GalleryTrigger;
     const wchar_t *Settings_Label_GalleryTriggerMode;
+    const wchar_t *Settings_Label_KeepGalleryVisibleOnThumbnailClick;
+    const wchar_t *Settings_Tooltip_KeepGalleryVisibleOnThumbnailClick;
     const wchar_t *Settings_Option_GalleryTriggerAuto;
     const wchar_t *Settings_Option_GalleryTriggerDelay;
     const wchar_t *Settings_Option_GalleryTriggerClick;
@@ -1635,6 +1639,8 @@ static const LanguageTable Table_EN = {
     L"Ref: ", // HUD_Label_Ref
     L"Gallery Filmstrip (Top Hover)", // Settings_Header_GalleryTrigger
     L"Trigger Mode", // Settings_Label_GalleryTriggerMode
+    L"Keep visible after clicking thumbnail", // Settings_Label_KeepGalleryVisibleOnThumbnailClick
+    L"This feature will automatically enable Window Lock and Keep Window Size On Navigation.", // Settings_Tooltip_KeepGalleryVisibleOnThumbnailClick
     L"Auto Hover", // Settings_Option_GalleryTriggerAuto
     L"Hotspot Hover", // Settings_Option_GalleryTriggerDelay
     L"Click Hotspot", // Settings_Option_GalleryTriggerClick
@@ -2185,6 +2191,8 @@ static const LanguageTable Table_CN = {
     L"参考: ", // HUD_Label_Ref
     L"图库胶片带 (顶部悬浮)", // Settings_Header_GalleryTrigger
     L"触发模式", // Settings_Label_GalleryTriggerMode
+    L"缩略图切图时不自动隐藏", // Settings_Label_KeepGalleryVisibleOnThumbnailClick
+    L"开启此功能将自动开启“锁定窗口”和“导航时保持窗口尺寸不变”。", // Settings_Tooltip_KeepGalleryVisibleOnThumbnailClick
     L"自动悬停", // Settings_Option_GalleryTriggerAuto
     L"热点停留", // Settings_Option_GalleryTriggerDelay
     L"点击热点", // Settings_Option_GalleryTriggerClick
@@ -2735,6 +2743,8 @@ static const LanguageTable Table_TW = {
     L"參考: ", // HUD_Label_Ref
     L"圖庫底片帶 (頂部懸浮)", // Settings_Header_GalleryTrigger
     L"觸發模式", // Settings_Label_GalleryTriggerMode
+    L"縮圖切圖時不自動隱藏", // Settings_Label_KeepGalleryVisibleOnThumbnailClick
+    L"開啟此功能將自動開啟「鎖定視窗」和「導覽時保持視窗尺寸不變」。", // Settings_Tooltip_KeepGalleryVisibleOnThumbnailClick
     L"自動懸停", // Settings_Option_GalleryTriggerAuto
     L"熱點停留", // Settings_Option_GalleryTriggerDelay
     L"點擊熱點", // Settings_Option_GalleryTriggerClick
@@ -3285,6 +3295,8 @@ static const LanguageTable Table_JA = {
     L"参考 : ", // HUD_Label_Ref
     L"ギャラリー フィルムストリップ (上部ホバー)", // Settings_Header_GalleryTrigger
     L"トリガーモード", // Settings_Label_GalleryTriggerMode
+    L"サムネイルクリック後に表示を維持", // Settings_Label_KeepGalleryVisibleOnThumbnailClick
+    L"この機能をオンにすると、「ウィンドウをロック」と「ナビゲーション時にウィンドウサイズを維持」が自動的にオンになります。", // Settings_Tooltip_KeepGalleryVisibleOnThumbnailClick
     L"自動ホバー", // Settings_Option_GalleryTriggerAuto
     L"ホットスポットホバー", // Settings_Option_GalleryTriggerDelay
     L"ホットスポットクリック", // Settings_Option_GalleryTriggerClick
@@ -3835,6 +3847,8 @@ static const LanguageTable Table_RU = {
     L"Эталон: ", // HUD_Label_Ref
     L"Диафильм из галереи (при наведении сверху)", // Settings_Header_GalleryTrigger
     L"Режим триггера", // Settings_Label_GalleryTriggerMode
+    L"Не скрывать после клика", // Settings_Label_KeepGalleryVisibleOnThumbnailClick
+    L"Эта функция автоматически включит блокировку окна и сохранение размера окна при навигации.", // Settings_Tooltip_KeepGalleryVisibleOnThumbnailClick
     L"Автонаведение", // Settings_Option_GalleryTriggerAuto
     L"Наведение на точку", // Settings_Option_GalleryTriggerDelay
     L"Щелчок по точке", // Settings_Option_GalleryTriggerClick
@@ -4385,6 +4399,8 @@ static const LanguageTable Table_DE = {
     L"Ref: ", // HUD_Label_Ref
     L"Galerie-Filmstreifen (Hover oben)", // Settings_Header_GalleryTrigger
     L"Trigger-Modus", // Settings_Label_GalleryTriggerMode
+    L"Nach Klick sichtbar bleiben", // Settings_Label_KeepGalleryVisibleOnThumbnailClick
+    L"Diese Funktion aktiviert automatisch die Fenstersperre und die Beibehaltung der Fenstergröße bei der Navigation.", // Settings_Tooltip_KeepGalleryVisibleOnThumbnailClick
     L"Automatischer Hover", // Settings_Option_GalleryTriggerAuto
     L"Hotspot-Hover", // Settings_Option_GalleryTriggerDelay
     L"Hotspot-Klick", // Settings_Option_GalleryTriggerClick
@@ -4935,6 +4951,8 @@ static const LanguageTable Table_ES = {
     L"Ref: ", // HUD_Label_Ref
     L"Tira de imágenes de galería (Hover superior)", // Settings_Header_GalleryTrigger
     L"Modo de activación", // Settings_Label_GalleryTriggerMode
+    L"Mantener visible tras clic", // Settings_Label_KeepGalleryVisibleOnThumbnailClick
+    L"Esta función habilitará automáticamente el bloqueo de ventana y mantener el tamaño de la ventana en la navegación.", // Settings_Tooltip_KeepGalleryVisibleOnThumbnailClick
     L"Hover automático", // Settings_Option_GalleryTriggerAuto
     L"Hover en punto caliente", // Settings_Option_GalleryTriggerDelay
     L"Clic en punto caliente", // Settings_Option_GalleryTriggerClick
@@ -5485,6 +5503,8 @@ static const LanguageTable Table_FR = {
     L"Ref: ", // HUD_Label_Ref
     L"Film fixe de la galerie (Survol supérieur)", // Settings_Header_GalleryTrigger
     L"Mode de déclenchement", // Settings_Label_GalleryTriggerMode
+    L"Maintenir visible après clic", // Settings_Label_KeepGalleryVisibleOnThumbnailClick
+    L"Cette fonction activera automatiquement le verrouillage de la fenêtre et le maintien de la taille de la fenêtre lors de la navigation.", // Settings_Tooltip_KeepGalleryVisibleOnThumbnailClick
     L"Survol automatique", // Settings_Option_GalleryTriggerAuto
     L"Survol du point chaud", // Settings_Option_GalleryTriggerDelay
     L"Clic sur le point chaud", // Settings_Option_GalleryTriggerClick
@@ -6039,6 +6059,8 @@ void Apply(const LanguageTable& t) {
   HUD_Label_Ref = t.HUD_Label_Ref;
   Settings_Header_GalleryTrigger = t.Settings_Header_GalleryTrigger;
   Settings_Label_GalleryTriggerMode = t.Settings_Label_GalleryTriggerMode;
+  Settings_Label_KeepGalleryVisibleOnThumbnailClick = t.Settings_Label_KeepGalleryVisibleOnThumbnailClick;
+  Settings_Tooltip_KeepGalleryVisibleOnThumbnailClick = t.Settings_Tooltip_KeepGalleryVisibleOnThumbnailClick;
   Settings_Option_GalleryTriggerAuto = t.Settings_Option_GalleryTriggerAuto;
   Settings_Option_GalleryTriggerDelay = t.Settings_Option_GalleryTriggerDelay;
   Settings_Option_GalleryTriggerClick = t.Settings_Option_GalleryTriggerClick;

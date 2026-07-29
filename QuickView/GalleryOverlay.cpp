@@ -1702,7 +1702,9 @@ bool GalleryOverlay::OnLButtonUp(int x, int y, int& outSelectedIndex) {
             m_selectedIndex = idx;
             outSelectedIndex = idx;
             if (!m_isPinned) {
-                Close(true);
+                if (!g_config.GalleryKeepVisibleOnThumbnailClick) {
+                    Close(true);
+                }
             } else if (m_mode == GalleryMode::FullGrid) {
                 SetMode(GalleryMode::Filmstrip);
             }

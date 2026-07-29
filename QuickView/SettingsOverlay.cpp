@@ -1621,12 +1621,26 @@ void SettingsOverlay::BuildMenu() {
         g_toolbar.SetLockState(g_runtime.LockWindowSize);
         if (!g_config.LockWindowSize) {
             g_config.RememberLastWindowSizeAndPosition = false;
+            if (g_config.GalleryKeepVisibleOnThumbnailClick) {
+                g_config.GalleryKeepVisibleOnThumbnailClick = false;
+                if (overlay) overlay->BuildMenu();
+            }
         }
         SaveConfig();
     };
     tabVisuals.items.push_back(itemLockWindow);
 
-    tabVisuals.items.push_back({ AppStrings::Settings_Label_KeepWindowSizeOnNav, OptionType::Toggle, &g_config.KeepWindowSizeOnNav });
+    SettingsItem itemKeepWindowSize = { AppStrings::Settings_Label_KeepWindowSizeOnNav, OptionType::Toggle, &g_config.KeepWindowSizeOnNav };
+    itemKeepWindowSize.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) {
+        if (!g_config.KeepWindowSizeOnNav) {
+            if (g_config.GalleryKeepVisibleOnThumbnailClick) {
+                g_config.GalleryKeepVisibleOnThumbnailClick = false;
+                if (overlay) overlay->BuildMenu();
+            }
+        }
+        SaveConfig();
+    };
+    tabVisuals.items.push_back(itemKeepWindowSize);
     SettingsItem itemRememberWindow = { AppStrings::Settings_Label_RememberLastWindowSizeAndPosition, OptionType::Toggle, &g_config.RememberLastWindowSizeAndPosition };
     itemRememberWindow.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) {
         if (g_config.RememberLastWindowSizeAndPosition) {
@@ -1915,6 +1929,23 @@ void SettingsOverlay::BuildMenu() {
             overlay->BuildMenu();
         };
         tabControl.items.push_back(itemGalleryTrigger);
+
+        SettingsItem itemKeepVisible = { AppStrings::Settings_Label_KeepGalleryVisibleOnThumbnailClick, OptionType::Toggle, &g_config.GalleryKeepVisibleOnThumbnailClick };
+        itemKeepVisible.isNewOption = true;
+        itemKeepVisible.tooltipText = AppStrings::Settings_Tooltip_KeepGalleryVisibleOnThumbnailClick;
+        itemKeepVisible.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) {
+            if (g_config.GalleryKeepVisibleOnThumbnailClick) {
+                g_config.LockWindowSize = true;
+                g_runtime.LockWindowSize = true;
+                g_toolbar.SetLockState(true);
+                g_config.KeepWindowSizeOnNav = true;
+                if (overlay) {
+                    overlay->BuildMenu();
+                }
+            }
+            SaveConfig();
+        };
+        tabControl.items.push_back(itemKeepVisible);
 
         if (g_config.GalleryTriggerMode == 0) {
             SettingsItem itemAreaHeight = { AppStrings::Settings_Label_GalleryTriggerAreaHeight, OptionType::Slider, nullptr, &g_config.GalleryTriggerAreaHeight };
