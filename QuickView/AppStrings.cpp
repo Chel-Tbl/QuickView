@@ -553,6 +553,8 @@ const wchar_t *Context_SlideshowMode = nullptr;
 const wchar_t *Settings_Label_SlideshowInterval = nullptr;
 const wchar_t *Settings_Label_SlideshowImmersive = nullptr;
 const wchar_t *Settings_Label_CustomLiteInfoPanel = nullptr;
+const wchar_t *Settings_Label_CustomFullInfoPanel = nullptr;
+const wchar_t *Settings_Label_InfoPanelScale = nullptr;
 const wchar_t *Settings_Label_ItemsInNormalMode = nullptr;
 const wchar_t *Settings_Label_ItemsInCompareMode = nullptr;
 const wchar_t *Settings_Label_SeparatorPreset = nullptr;
@@ -1097,6 +1099,8 @@ struct LanguageTable {
     const wchar_t *Settings_Label_SlideshowInterval;
     const wchar_t *Settings_Label_SlideshowImmersive;
     const wchar_t *Settings_Label_CustomLiteInfoPanel;
+    const wchar_t *Settings_Label_CustomFullInfoPanel;
+    const wchar_t *Settings_Label_InfoPanelScale;
     const wchar_t *Settings_Label_ItemsInNormalMode;
     const wchar_t *Settings_Label_ItemsInCompareMode;
     const wchar_t *Settings_Label_SeparatorPreset;
@@ -1642,6 +1646,8 @@ static const LanguageTable Table_EN = {
     L"Interval (seconds)", // Settings_Label_SlideshowInterval
     L"Immersive Mode", // Settings_Label_SlideshowImmersive
     L"Custom Lite Info Panel", // Settings_Label_CustomLiteInfoPanel
+    L"Custom Full Info Panel", // Settings_Label_CustomFullInfoPanel
+    L"Info Panel Full/Lite Zoom", // Settings_Label_InfoPanelScale
     L"Items in Normal Mode", // Settings_Label_ItemsInNormalMode
     L"Items in Compare Mode", // Settings_Label_ItemsInCompareMode
     L"Separator preset", // Settings_Label_SeparatorPreset
@@ -2187,6 +2193,8 @@ static const LanguageTable Table_CN = {
     L"切换间隔 (秒)", // Settings_Label_SlideshowInterval
     L"沉浸模式", // Settings_Label_SlideshowImmersive
     L"自定义精简信息栏", // Settings_Label_CustomLiteInfoPanel
+    L"自定义完整信息栏", // Settings_Label_CustomFullInfoPanel
+    L"完整/精简信息栏缩放", // Settings_Label_InfoPanelScale
     L"普通模式显示项", // Settings_Label_ItemsInNormalMode
     L"对比模式显示项", // Settings_Label_ItemsInCompareMode
     L"分隔符预设", // Settings_Label_SeparatorPreset
@@ -2732,6 +2740,8 @@ static const LanguageTable Table_TW = {
     L"切換間隔 (秒)", // Settings_Label_SlideshowInterval
     L"沉浸模式", // Settings_Label_SlideshowImmersive
     L"自定義精簡信息欄", // Settings_Label_CustomLiteInfoPanel
+    L"自定義完整信息欄", // Settings_Label_CustomFullInfoPanel
+    L"完整/精簡信息欄縮放", // Settings_Label_InfoPanelScale
     L"普通模式顯示項", // Settings_Label_ItemsInNormalMode
     L"對比模式顯示項", // Settings_Label_ItemsInCompareMode
     L"分隔符預設", // Settings_Label_SeparatorPreset
@@ -3277,6 +3287,8 @@ static const LanguageTable Table_JA = {
     L"間隔 (秒)", // Settings_Label_SlideshowInterval
     L"イマーシブモード", // Settings_Label_SlideshowImmersive
     L"カスタム簡易情報パネル", // Settings_Label_CustomLiteInfoPanel
+    L"カスタム完全情報パネル", // Settings_Label_CustomFullInfoPanel
+    L"情報パネルのズーム", // Settings_Label_InfoPanelScale
     L"通常モード時の表示項目", // Settings_Label_ItemsInNormalMode
     L"比較モード時の表示項目", // Settings_Label_ItemsInCompareMode
     L"区切り文字プリセット", // Settings_Label_SeparatorPreset
@@ -3822,6 +3834,8 @@ static const LanguageTable Table_RU = {
     L"Интервал (сек)", // Settings_Label_SlideshowInterval
     L"Режим погружения", // Settings_Label_SlideshowImmersive
     L"Настройка краткой инфо-панели", // Settings_Label_CustomLiteInfoPanel
+    L"Настройка полной инфо-панели", // Settings_Label_CustomFullInfoPanel
+    L"Масштаб инфо-панели", // Settings_Label_InfoPanelScale
     L"Элементы в обычном режиме", // Settings_Label_ItemsInNormalMode
     L"Элементы в режиме сравнения", // Settings_Label_ItemsInCompareMode
     L"Шаблон разделителя", // Settings_Label_SeparatorPreset
@@ -4367,6 +4381,8 @@ static const LanguageTable Table_DE = {
     L"Intervall (Sekunden)", // Settings_Label_SlideshowInterval
     L"Immersiver Modus", // Settings_Label_SlideshowImmersive
     L"Kompakte Infoleiste anpassen", // Settings_Label_CustomLiteInfoPanel
+    L"Vollständige Infoleiste anpassen", // Settings_Label_CustomFullInfoPanel
+    L"Info Panel Zoom", // Settings_Label_InfoPanelScale
     L"Elemente im Normalmodus", // Settings_Label_ItemsInNormalMode
     L"Elemente im Vergleichsmodus", // Settings_Label_ItemsInCompareMode
     L"Trennzeichen-Vorlage", // Settings_Label_SeparatorPreset
@@ -4912,6 +4928,8 @@ static const LanguageTable Table_ES = {
     L"Intervalo (segundos)", // Settings_Label_SlideshowInterval
     L"Modo inmersivo", // Settings_Label_SlideshowImmersive
     L"Personalizar panel de información compacto", // Settings_Label_CustomLiteInfoPanel
+    L"Personalizar panel de información completo", // Settings_Label_CustomFullInfoPanel
+    L"Zoom del panel de información", // Settings_Label_InfoPanelScale
     L"Elementos en modo normal", // Settings_Label_ItemsInNormalMode
     L"Elementos en modo de comparación", // Settings_Label_ItemsInCompareMode
     L"Preajuste de separador", // Settings_Label_SeparatorPreset
@@ -5457,6 +5475,8 @@ static const LanguageTable Table_FR = {
     L"Intervalle (secondes)", // Settings_Label_SlideshowInterval
     L"Mode immersif", // Settings_Label_SlideshowImmersive
     L"Personnaliser le panneau d'infos compact", // Settings_Label_CustomLiteInfoPanel
+    L"Personnaliser le panneau d'infos complet", // Settings_Label_CustomFullInfoPanel
+    L"Zoom du panneau d'informations", // Settings_Label_InfoPanelScale
     L"Éléments en mode normal", // Settings_Label_ItemsInNormalMode
     L"Éléments en mode comparaison", // Settings_Label_ItemsInCompareMode
     L"Séparateur prédéfini", // Settings_Label_SeparatorPreset
@@ -6006,6 +6026,8 @@ void Apply(const LanguageTable& t) {
   Settings_Label_SlideshowInterval = t.Settings_Label_SlideshowInterval;
   Settings_Label_SlideshowImmersive = t.Settings_Label_SlideshowImmersive;
   Settings_Label_CustomLiteInfoPanel = t.Settings_Label_CustomLiteInfoPanel;
+  Settings_Label_CustomFullInfoPanel = t.Settings_Label_CustomFullInfoPanel ? t.Settings_Label_CustomFullInfoPanel : L"Custom Full Info Panel";
+  Settings_Label_InfoPanelScale = t.Settings_Label_InfoPanelScale ? t.Settings_Label_InfoPanelScale : L"Info Panel Zoom (Global/100%/125%/150%/175%/200%)";
   Settings_Label_ItemsInNormalMode = t.Settings_Label_ItemsInNormalMode;
   Settings_Label_ItemsInCompareMode = t.Settings_Label_ItemsInCompareMode;
   Settings_Label_SeparatorPreset = t.Settings_Label_SeparatorPreset;

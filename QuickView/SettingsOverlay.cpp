@@ -1674,13 +1674,14 @@ void SettingsOverlay::BuildMenu() {
     
     // Custom Lite Info Panel Section (Group Header + Cloud Lists + Presets)
     SettingsItem headerCustomLite = { AppStrings::Settings_Label_CustomLiteInfoPanel, OptionType::Header };
+    headerCustomLite.isNewOption = true;
     tabVisuals.items.push_back(headerCustomLite);
     
     SettingsItem tagCloudNormal;
     tagCloudNormal.label = AppStrings::Settings_Label_ItemsInNormalMode;
     tagCloudNormal.type = OptionType::TagCloud;
     tagCloudNormal.pStrVal = &g_config.InfoPanelLiteItemsNormal;
-    tagCloudNormal.options = { L"Zoom", L"Progress", L"File", L"Size", L"Disk", L"Format", L"Camera", L"Exp", L"Lens", L"Focal", L"Date", L"Flash", L"GPS", L"Profile" };
+    tagCloudNormal.options = { L"Zoom", L"Progress", L"File", L"Size", L"Disk", L"Date", L"Format", L"Sharp", L"Ent", L"BPP", L"Camera", L"Exp", L"Lens", L"Focal", L"Profile", L"HDR", L"Flash", L"W.Bal", L"Meter", L"Prog", L"Program", L"GPS" };
     tagCloudNormal.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) { SaveConfig(); };
     tabVisuals.items.push_back(tagCloudNormal);
 
@@ -1688,7 +1689,7 @@ void SettingsOverlay::BuildMenu() {
     tagCloudCompare.label = AppStrings::Settings_Label_ItemsInCompareMode;
     tagCloudCompare.type = OptionType::TagCloud;
     tagCloudCompare.pStrVal = &g_config.InfoPanelLiteItemsCompare;
-    tagCloudCompare.options = { L"File", L"Size", L"Disk", L"Sharp", L"Ent", L"BPP", L"Date", L"Progress", L"Zoom", L"Format", L"Camera", L"Exp", L"Lens", L"Focal", L"Flash", L"GPS", L"Profile" };
+    tagCloudCompare.options = { L"Zoom", L"Progress", L"File", L"Size", L"Disk", L"Date", L"Format", L"Sharp", L"Ent", L"BPP", L"Camera", L"Exp", L"Lens", L"Focal", L"Profile", L"HDR", L"Flash", L"W.Bal", L"Meter", L"Prog", L"Program" };
     tagCloudCompare.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) { SaveConfig(); };
     tabVisuals.items.push_back(tagCloudCompare);
 
@@ -1708,7 +1709,38 @@ void SettingsOverlay::BuildMenu() {
         }
     };
     tabVisuals.items.push_back(separatorPreset);
+
+    SettingsItem headerCustomFull = { AppStrings::Settings_Label_CustomFullInfoPanel, OptionType::Header };
+    headerCustomFull.isNewOption = true;
+    tabVisuals.items.push_back(headerCustomFull);
     
+    SettingsItem tagCloudFullNormal;
+    tagCloudFullNormal.label = AppStrings::Settings_Label_ItemsInNormalMode;
+    tagCloudFullNormal.type = OptionType::TagCloud;
+    tagCloudFullNormal.pStrVal = &g_config.InfoPanelFullItemsNormal;
+    tagCloudFullNormal.options = { L"Histogram", L"Position", L"File", L"RAW", L"Size", L"Disk", L"Date", L"Format", L"Sharp", L"Ent", L"BPP", L"Camera", L"Exp", L"Lens", L"Focal", L"Profile", L"HDR", L"Flash", L"W.Bal", L"Meter", L"Prog", L"Program", L"GPS" };
+    tagCloudFullNormal.tagCloudNoLimit = true;
+    tagCloudFullNormal.tagCloudNoSort = true;
+    tagCloudFullNormal.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) { SaveConfig(); };
+    tabVisuals.items.push_back(tagCloudFullNormal);
+
+    SettingsItem tagCloudFullCompare;
+    tagCloudFullCompare.label = AppStrings::Settings_Label_ItemsInCompareMode;
+    tagCloudFullCompare.type = OptionType::TagCloud;
+    tagCloudFullCompare.pStrVal = &g_config.InfoPanelFullItemsCompare;
+    tagCloudFullCompare.options = { L"Histogram", L"File", L"RAW", L"Size", L"Disk", L"Date", L"Format", L"Sharp", L"Ent", L"BPP", L"Camera", L"Exp", L"Lens", L"Focal", L"Profile", L"HDR", L"Flash", L"W.Bal", L"Meter", L"Prog", L"Program" };
+    tagCloudFullCompare.tagCloudNoLimit = true;
+    tagCloudFullCompare.tagCloudNoSort = true;
+    tagCloudFullCompare.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) { SaveConfig(); };
+    tabVisuals.items.push_back(tagCloudFullCompare);
+
+    SettingsItem scaleOption;
+    scaleOption.label = AppStrings::Settings_Label_InfoPanelScale;
+    scaleOption.type = OptionType::ComboBox;
+    scaleOption.pIntVal = &g_config.InfoPanelScale;
+    scaleOption.options = { L"Global", L"100%", L"125%", L"150%", L"175%", L"200%" };
+    scaleOption.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) { SaveConfig(); };
+    tabVisuals.items.push_back(scaleOption);
     // --- Slideshow ---
     tabVisuals.items.push_back({ AppStrings::Context_SlideshowMode, OptionType::Header });
     
@@ -3210,9 +3242,12 @@ void SettingsOverlay::Render(ID2D1DeviceContext* pRT, float winW, float winH) {
                     int activeIndex = isActive ? (int)(std::distance(activeItems.begin(), it) + 1) : 0;
 
                     // Build display string
-                    std::wstring displayText(opt);
-                    if (isActive) {
-                        displayText = std::to_wstring(activeIndex) + L". " + std::wstring(opt);
+                    std::wstring_view optName = opt;
+                    if (opt == L"Size" && item.tagCloudNoLimit) optName = L"Size & Zoom";
+
+                    std::wstring displayText(optName);
+                    if (isActive && !item.tagCloudNoSort) {
+                        displayText = std::to_wstring(activeIndex) + L". " + std::wstring(optName);
                     }
 
                     float textW = 0.0f;
@@ -4582,7 +4617,7 @@ SettingsAction SettingsOverlay::OnLButtonDown(float x, float y) {
                 if (it != activeItems.end()) {
                     activeItems.erase(it);
                 } else {
-                    if ((int)activeItems.size() < kInfoPanelLiteMaxItems) {
+                    if (m_pHoverItem->tagCloudNoLimit || (int)activeItems.size() < kInfoPanelLiteMaxItems) {
                         activeItems.push_back(std::wstring(clickedOpt));
                     } else {
                         m_pHoverItem->statusText = L"Limit reached (max 8 items)";

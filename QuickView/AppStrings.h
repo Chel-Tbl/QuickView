@@ -337,6 +337,8 @@ namespace AppStrings {
     extern const wchar_t* Settings_Label_OpenFullScreenMode;
     extern const wchar_t* Settings_Label_FullScreenZoomMode;
     extern const wchar_t* Settings_Label_CustomLiteInfoPanel;
+    extern const wchar_t* Settings_Label_CustomFullInfoPanel;
+    extern const wchar_t* Settings_Label_InfoPanelScale;
     extern const wchar_t* Settings_Label_ItemsInNormalMode;
     extern const wchar_t* Settings_Label_ItemsInCompareMode;
     extern const wchar_t* Settings_Label_SeparatorPreset;

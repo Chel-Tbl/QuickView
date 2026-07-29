@@ -88,6 +88,8 @@ struct SettingsItem {
     std::vector<D2D1_RECT_F> optionRects = {}; 
     bool isNewOption = false; // Flag to indicate if this is a newly added option in this version
     float step = 0.0f; // If 0.0f, defaults to 1% of the (maxVal - minVal) range.
+    bool tagCloudNoLimit = false;
+    bool tagCloudNoSort = false;
 };
 
 struct SettingsTab {

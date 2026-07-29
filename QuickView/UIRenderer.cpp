@@ -179,6 +179,17 @@ void UIRenderer::SetUIScale(float scale) {
     MarkGalleryDirty();
 }
 
+float UIRenderer::GetInfoPanelScale() const {
+    switch (g_config.InfoPanelScale) {
+        case 1: return 1.0f;
+        case 2: return 1.25f;
+        case 3: return 1.50f;
+        case 4: return 1.75f;
+        case 5: return 2.0f;
+        default: return m_uiScale;
+    }
+}
+
 // ============================================================================
 // State Injection Methods (Decoupling from main.cpp globals)
 // ============================================================================
@@ -187,6 +198,8 @@ void UIRenderer::UpdateMetadata(const CImageLoader::ImageMetadata& metadata, con
     m_metadata = metadata;
     m_imagePath = imagePath;
     g_imagePath = imagePath; 
+    m_lastInfoImagePath = L""; // Force cache invalidation
+    m_lastCompactInfoImagePath = L""; // Force compact cache invalidation
     BuildInfoGrid();  // Rebuild grid when metadata changes
     MarkStaticDirty();
 }
@@ -269,9 +282,13 @@ HitTestResult UIRenderer::HitTest(float x, float y) {
                      m_lastMousePos.x >= cx - neckW && m_lastMousePos.x <= cx + neckW);
     bool isHotspotShowing = !g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && (g_config.GalleryTriggerMode == 1 || g_config.GalleryTriggerMode == 2) && (m_width >= 300.0f * s) && (m_height >= 200.0f * s) && isInNeck;
 
-    bool hudVisible = IsCompareModeActive() && g_runtime.ShowCompareInfo && !g_gallery.IsVisible() && !isHotspotShowing;
+    bool isFilmstripActive = g_gallery.IsVisible() && g_gallery.GetMode() == GalleryMode::Filmstrip;
+    bool hideInfoPanel = g_settingsOverlay.IsVisible() || g_helpOverlay.IsVisible() || (g_gallery.IsVisible() && !isFilmstripActive);
+    bool hideHud = g_settingsOverlay.IsVisible() || g_helpOverlay.IsVisible() || g_gallery.IsVisible() || AppContext::GetInstance().Dialog.IsVisible;
+
+    bool hudVisible = IsCompareModeActive() && g_runtime.ShowCompareInfo && !hideHud && !isHotspotShowing;
     
-    bool infoPanelVisible = g_runtime.ShowInfoPanel;
+    bool infoPanelVisible = g_runtime.ShowInfoPanel && !hideInfoPanel;
     if (infoPanelVisible) {
         bool overlapsHotspot = (m_lastInfoPanelRect.top < neckH && m_lastInfoPanelRect.right > cx - neckW && m_lastInfoPanelRect.left < cx + neckW);
         if (isHotspotShowing && overlapsHotspot) {
@@ -596,11 +613,17 @@ void UIRenderer::EnsureTextFormats() {
         }
     }
     
+    float currentPanelScale = GetInfoPanelScale();
+    if (m_panelFormat && fabsf(m_lastPanelScale - currentPanelScale) > 0.001f) {
+        m_panelFormat.Reset();
+    }
+
     if (!m_panelFormat) {
+        m_lastPanelScale = currentPanelScale;
         m_dwriteFactory->CreateTextFormat(
             L"Segoe UI", nullptr,
             DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-            11.0f * s, AppStrings::CurrentLocale, &m_panelFormat
+            11.0f * currentPanelScale, AppStrings::CurrentLocale, &m_panelFormat
         );
         if (m_panelFormat) {
             m_panelFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
@@ -1986,6 +2009,29 @@ WindowControlHit UIRenderer::HitTestWindowControls(float x, float y) {
     return WindowControlHit::None;
 }
 
+float UIRenderer::GetWindowControlsWidth() const {
+    if (!m_showControls && m_winCtrlHover == -1) return 0.0f;
+    const float s = m_uiScale;
+    float btnW = 28.0f * s;
+    if (m_width < btnW * 4) return 0.0f;
+
+    float xOffset = 0.0f;
+    float yOffset = 0.0f;
+    extern HWND g_mainHwnd;
+    if (g_mainHwnd) {
+        GetMaximizedWindowPaddings(g_mainHwnd, m_isFullscreen, xOffset, yOffset);
+    }
+
+    float marginX = 4.0f * s;
+    float padX = 2.0f * s;
+    float rightEdge = (float)m_width - xOffset - marginX - padX;
+    float pinLeft = rightEdge - btnW * 4;
+    float capsuleLeft = pinLeft - padX;
+    
+    float controlsWidth = (float)m_width - capsuleLeft;
+    return (controlsWidth > 0.0f) ? controlsWidth : 0.0f;
+}
+
 // ============================================================================
 // HUD V4: Full-Stack Observability (Native D2D)
 // ============================================================================
@@ -2347,7 +2393,8 @@ namespace {
         const std::wstring& path,
         const CImageLoader::ImageMetadata* other,
         float s,
-        UIRenderer* renderer);
+        UIRenderer* renderer,
+        float maxFileW = 0.0f);
     static void QueryFilePosition(const std::wstring& path, int& outIndex, size_t& outCount);
 }
 
@@ -2358,8 +2405,10 @@ namespace {
         const std::wstring& path,
         const CImageLoader::ImageMetadata* other,
         float s,
-        UIRenderer* renderer)
+        UIRenderer* renderer,
+        float maxFileW)
     {
+        (void)s;
         if (key == L"Zoom") {
             return std::to_wstring(GetCurrentZoomPercent()) + L"%";
         }
@@ -2381,8 +2430,12 @@ namespace {
             std::wstring p = path.empty() ? meta.SourcePath : path;
             if (p.empty()) return std::nullopt;
             std::wstring fname = p.substr(p.find_last_of(L"\\/") + 1);
-            float maxW = (other != nullptr) ? 150.0f * s : 200.0f * s;
-            std::wstring displayFname = renderer->MakeMiddleEllipsis(maxW, fname);
+            std::wstring displayFname;
+            if (maxFileW > 0.0f) {
+                displayFname = renderer->MakeMiddleEllipsis(maxFileW, fname);
+            } else {
+                displayFname = fname;
+            }
             if (const auto* pairedRaw = g_navigator.GetPairedRaw(FileNavigator::PathToImageID(p))) {
                 displayFname += L" (" + FileNavigator::PairedRawLabel(*pairedRaw) + L")";
             }
@@ -2532,6 +2585,34 @@ namespace {
             }
             return std::nullopt;
         }
+        else if (key == L"RAW") {
+            if (g_navigator.GetPairedRaw(FileNavigator::PathToImageID(path)) != nullptr) {
+                return L"RAW";
+            }
+            return std::nullopt;
+        }
+        else if (key == L"W.Bal") {
+            if (!meta.WhiteBalance.empty()) return meta.WhiteBalance;
+            return std::nullopt;
+        }
+        else if (key == L"Meter") {
+            if (!meta.MeteringMode.empty()) return meta.MeteringMode;
+            return std::nullopt;
+        }
+        else if (key == L"Prog") {
+            if (!meta.ExposureProgram.empty()) return meta.ExposureProgram;
+            return std::nullopt;
+        }
+        else if (key == L"Program") {
+            if (!meta.Software.empty()) return meta.Software;
+            return std::nullopt;
+        }
+        else if (key == L"HDR") {
+            if (IsHdrLikeContent(meta)) {
+                return BuildHdrSummary(meta);
+            }
+            return std::nullopt;
+        }
         return std::nullopt;
     }
 
@@ -2602,10 +2683,12 @@ namespace {
 // ============================================================================
 
 D2D1_SIZE_F UIRenderer::GetRequiredInfoPanelSize() const {
-    const float s = m_uiScale;
+    const float s = GetInfoPanelScale();
+    const_cast<UIRenderer*>(this)->EnsureTextFormats();
 
     if (g_runtime.ShowInfoPanel && g_runtime.InfoPanelExpanded) {
-        std::vector<InfoRow> rows = BuildGridRows(g_currentMetadata, g_imagePath, false);
+        const_cast<UIRenderer*>(this)->BuildInfoGrid();
+        const std::vector<InfoRow>& rows = m_infoGrid;
         float width = 0.0f;
         const float baseWidth = (GRID_ICON_WIDTH + GRID_LABEL_WIDTH + GRID_PADDING) * s;
         for (const auto& row : rows) {
@@ -2616,8 +2699,10 @@ D2D1_SIZE_F UIRenderer::GetRequiredInfoPanelSize() const {
         width = (std::clamp)(width, 220.0f * s, 430.0f * s);
         float height = 26.0f * s + (float)rows.size() * GRID_ROW_HEIGHT * s + 14.0f * s;
 
-        if (g_currentMetadata.HasGPS) height += 50.0f * s;
-        if (!g_currentMetadata.HistL.empty()) height += 100.0f * s;
+        const std::wstring& allowedItems = g_runtime.ShowCompareInfo ? g_config.InfoPanelFullItemsCompare : g_config.InfoPanelFullItemsNormal;
+        const bool showGPS = (allowedItems.find(L"GPS") != std::wstring::npos);
+        if (g_currentMetadata.HasGPS && showGPS) height += 50.0f * s;
+        if (!g_currentMetadata.HistL.empty() && allowedItems.find(L"Histogram") != std::wstring::npos) height += 100.0f * s;
 
         // Return required total window space
         // startX = 16 * s, startY = 32 * s
@@ -2634,11 +2719,23 @@ D2D1_SIZE_F UIRenderer::GetRequiredInfoPanelSize() const {
     return D2D1::SizeF(0, 0);
 }
 
-std::wstring UIRenderer::BuildCompactInfoText() const {
+std::wstring UIRenderer::BuildCompactInfoText(float maxFileW) const {
+    int currentZoom = GetCurrentZoomPercent();
+    bool hasHistR = !g_currentMetadata.HistR.empty();
+    if (m_lastCompactInfoZoom == currentZoom && 
+        m_lastCompactInfoImagePath == g_imagePath && 
+        m_lastCompactInfoConfig == g_config.InfoPanelLiteItemsNormal && 
+        m_lastCompactInfoMaxFileW == maxFileW &&
+        m_lastCompactInfoFullLoaded == g_currentMetadata.IsFullMetadataLoaded &&
+        m_lastCompactInfoHasSharpness == g_currentMetadata.HasSharpness &&
+        m_lastCompactInfoHasEntropy == g_currentMetadata.HasEntropy &&
+        m_lastCompactInfoHasHistR == hasHistR) {
+        return m_lastCompactInfoText;
+    }
     std::vector<std::wstring> items = SplitString(g_config.InfoPanelLiteItemsNormal, L',');
     std::vector<std::wstring> parts;
     for (const auto& itemKey : items) {
-        auto valOpt = FormatLiteField(itemKey, g_currentMetadata, g_imagePath, nullptr, m_uiScale, const_cast<UIRenderer*>(this));
+        auto valOpt = FormatLiteField(itemKey, g_currentMetadata, g_imagePath, nullptr, m_uiScale, const_cast<UIRenderer*>(this), maxFileW);
         if (valOpt.has_value()) {
             parts.push_back(*valOpt);
         }
@@ -2650,6 +2747,17 @@ std::wstring UIRenderer::BuildCompactInfoText() const {
         }
         info += parts[i];
     }
+    
+    
+    const_cast<UIRenderer*>(this)->m_lastCompactInfoZoom = currentZoom;
+    const_cast<UIRenderer*>(this)->m_lastCompactInfoImagePath = g_imagePath;
+    const_cast<UIRenderer*>(this)->m_lastCompactInfoConfig = g_config.InfoPanelLiteItemsNormal;
+    const_cast<UIRenderer*>(this)->m_lastCompactInfoMaxFileW = maxFileW;
+    const_cast<UIRenderer*>(this)->m_lastCompactInfoText = info;
+    const_cast<UIRenderer*>(this)->m_lastCompactInfoFullLoaded = g_currentMetadata.IsFullMetadataLoaded;
+    const_cast<UIRenderer*>(this)->m_lastCompactInfoHasSharpness = g_currentMetadata.HasSharpness;
+    const_cast<UIRenderer*>(this)->m_lastCompactInfoHasEntropy = g_currentMetadata.HasEntropy;
+    const_cast<UIRenderer*>(this)->m_lastCompactInfoHasHistR = hasHistR;
     
     return info;
 }
@@ -2680,6 +2788,9 @@ UIRenderer::TooltipInfo UIRenderer::GetTooltipInfo(std::wstring_view label) cons
 std::vector<InfoRow> UIRenderer::BuildGridRows(const CImageLoader::ImageMetadata& metadata, const std::wstring& imagePath, bool showAdvanced, int positionIndex, size_t positionTotal) const {
     std::vector<InfoRow> rows;
     if (imagePath.empty()) return rows;
+
+    const std::wstring& allowedItems = g_runtime.ShowCompareInfo ? g_config.InfoPanelFullItemsCompare : g_config.InfoPanelFullItemsNormal;
+    const std::wstring wrappedAllowed = L"," + allowedItems + L",";
 
     // Row 1: Filename
     std::wstring displayPath = imagePath;
@@ -2713,10 +2824,8 @@ std::vector<InfoRow> UIRenderer::BuildGridRows(const CImageLoader::ImageMetadata
         } else if (pairedRaw->size > 0) {
             swprintf_s(rawSizeBuf, L"%I64u KB", pairedRaw->size / 1024);
         }
-        rows.push_back({L"\U0001F517", L"RAW", rawName, rawSizeBuf, L"", TruncateMode::MiddleEllipsis, false});
+        rows.push_back({L"\U0001F517", L"RAW", rawName, rawSizeBuf, rawName, TruncateMode::MiddleEllipsis, false});
     } else if (std::wstring rendered = g_navigator.GetResolvedPath(imagePath); rendered != imagePath) {
-        // Viewing the RAW side of a pair: point back at the rendered sibling.
-        // Label = its concrete format (JPG/HEIC...), value = its file name.
         std::wstring rname = rendered.substr(rendered.find_last_of(L"\\/") + 1);
         const wchar_t* rlabel = L"Pair";
         std::wstring_view rext = QuickView::ExtensionOf(rendered);
@@ -2743,18 +2852,18 @@ std::vector<InfoRow> UIRenderer::BuildGridRows(const CImageLoader::ImageMetadata
         } else if (g_navigator.GetFileSize(ridx) > 0) {
             swprintf_s(rSizeBuf, L"%.2f KB", g_navigator.GetFileSize(ridx) / 1024.0);
         }
-        rows.push_back({L"\U0001F517", rlabel, rname, rSizeBuf, rname, TruncateMode::MiddleEllipsis, false});
+        std::wstring rawPairMain = std::wstring(L"[") + rlabel + L"] " + rname;
+        rows.push_back({L"\U0001F517", L"RAW", rawPairMain, rSizeBuf, rawPairMain, TruncateMode::MiddleEllipsis, false});
     }
 
-    // Row 2: Dimensions + Megapixels + Zoom
+    // Row 2: Dimensions + Megapixels
     if (metadata.Width > 0) {
         UINT64 totalPixels = (UINT64)metadata.Width * metadata.Height;
         double megapixels = totalPixels / 1000000.0;
         wchar_t dimBuf[64];
         swprintf_s(dimBuf, L"%u\u00d7%u", metadata.Width, metadata.Height);
         wchar_t mpBuf[48];
-        int zoomPct = GetCurrentZoomPercent();
-        swprintf_s(mpBuf, L"(%.1fMP)@%d%%", megapixels, zoomPct);
+        swprintf_s(mpBuf, L"(%.1fMP)@%d%%", megapixels, GetCurrentZoomPercent());
         rows.push_back({L"\U0001F4D0", L"Size", dimBuf, mpBuf, L"", TruncateMode::None, false});
     }
 
@@ -2958,23 +3067,21 @@ std::vector<InfoRow> UIRenderer::BuildGridRows(const CImageLoader::ImageMetadata
 	        rows.push_back({L"\U0001F39E", L"Format", formatText, L"", metadata.FormatDetails, TruncateMode::EndEllipsis, false});
 	    }
 
-    // Advanced Metrics at the very bottom (only for HUD/Geek mode)
-    if (showAdvanced) {
-        if (metadata.HasSharpness) {
-            wchar_t buf[32]; swprintf_s(buf, L"%.0f", metadata.Sharpness);
-            rows.push_back({L"\U0001F3AF", L"Sharp", buf, L"", L"", TruncateMode::None, false});
-        }
-        if (metadata.HasEntropy) {
-            wchar_t buf[32]; swprintf_s(buf, L"%.2f", metadata.Entropy);
-            rows.push_back({L"\U0001F4CA", L"Ent", buf, L"", L"", TruncateMode::None, false});
-        }
-        
-        // BPP (Bits Per Pixel)
-        if (metadata.Width > 0 && metadata.Height > 0 && metadata.FileSize > 0) {
-            double bpp = (double)(metadata.FileSize * 8) / ((double)metadata.Width * metadata.Height);
-            wchar_t bppBuf[32]; swprintf_s(bppBuf, L"%.2f bpp", bpp);
-            rows.push_back({L"\U0001F4C8", L"BPP", bppBuf, L"", L"", TruncateMode::None, false});
-        }
+    // Advanced Metrics at the very bottom
+    if (metadata.HasSharpness) {
+        wchar_t buf[32]; swprintf_s(buf, L"%.0f", metadata.Sharpness);
+        rows.push_back({L"\U0001F3AF", L"Sharp", buf, L"", L"", TruncateMode::None, false});
+    }
+    if (metadata.HasEntropy) {
+        wchar_t buf[32]; swprintf_s(buf, L"%.2f", metadata.Entropy);
+        rows.push_back({L"\U0001F4CA", L"Ent", buf, L"", L"", TruncateMode::None, false});
+    }
+    
+    // BPP (Bits Per Pixel)
+    if (metadata.Width > 0 && metadata.Height > 0 && metadata.FileSize > 0) {
+        double bpp = (double)(metadata.FileSize * 8) / ((double)metadata.Width * metadata.Height);
+        wchar_t bppBuf[32]; swprintf_s(bppBuf, L"%.2f bpp", bpp);
+        rows.push_back({L"\U0001F4C8", L"BPP", bppBuf, L"", L"", TruncateMode::None, false});
     }
 
     // Add extra tooltips based on label
@@ -2994,6 +3101,24 @@ std::vector<InfoRow> UIRenderer::BuildGridRows(const CImageLoader::ImageMetadata
             row.fullText += helpText;
         }
     }
+
+    
+    auto isHdrItem = [](const wchar_t* lbl) {
+        if (!lbl) return false;
+        const wchar_t* hdrItems[] = { L"HDR Pro", L"D.Range", L"BitDepth", L"Transfer", L"Gamut", L"MaxCLL", L"MaxFALL", L"Mastering", L"Pipeline", L"ImagePeak", L"Display", L"Base", L"GainMap", L"GainRatio", L"Blend" };
+        for (const auto* h : hdrItems) {
+            if (wcscmp(lbl, h) == 0) return true;
+        }
+        return false;
+    };
+
+    rows.erase(std::remove_if(rows.begin(), rows.end(), [&](const InfoRow& r) {
+        // Group all HDR technical details under the "HDR" option.
+        if (isHdrItem(r.label)) {
+            return wrappedAllowed.find(L",HDR,") == std::wstring::npos;
+        }
+        return wrappedAllowed.find(std::wstring(L",") + r.label + L",") == std::wstring::npos;
+    }), rows.end());
 
     return rows;
 }
@@ -3247,13 +3372,34 @@ namespace {
 }
 
 void UIRenderer::BuildInfoGrid() {
+    int currentZoom = GetCurrentZoomPercent();
+    bool hasHistR = !g_currentMetadata.HistR.empty();
+    if (!m_infoGrid.empty() && 
+        m_lastInfoZoom == currentZoom && 
+        m_lastInfoImagePath == g_imagePath && 
+        m_lastInfoConfig == g_config.InfoPanelFullItemsNormal &&
+        m_lastInfoFullLoaded == g_currentMetadata.IsFullMetadataLoaded &&
+        m_lastInfoHasSharpness == g_currentMetadata.HasSharpness &&
+        m_lastInfoHasEntropy == g_currentMetadata.HasEntropy &&
+        m_lastInfoHasHistR == hasHistR) {
+        return; // Cache hit
+    }
+
+    m_lastInfoZoom = currentZoom;
+    m_lastInfoImagePath = g_imagePath;
+    m_lastInfoConfig = g_config.InfoPanelFullItemsNormal;
+    m_lastInfoFullLoaded = g_currentMetadata.IsFullMetadataLoaded;
+    m_lastInfoHasSharpness = g_currentMetadata.HasSharpness;
+    m_lastInfoHasEntropy = g_currentMetadata.HasEntropy;
+    m_lastInfoHasHistR = hasHistR;
+    
     m_hdrDetailsToggleRect = {};
     m_infoGrid = BuildGridRows(g_currentMetadata, g_imagePath, false);
 }
 
 void UIRenderer::DrawInfoGrid(ID2D1DeviceContext* dc, float startX, float startY, float width, const AdaptiveUiPalette& palette) {
     if (m_infoGrid.empty() || !m_panelFormat) return;
-    const float s = m_uiScale;
+    const float s = GetInfoPanelScale();
     ComPtr<ID2D1SolidColorBrush> brushMain, brushDim, brushHover;
     dc->CreateSolidColorBrush(palette.foreground, &brushMain);
     dc->CreateSolidColorBrush(palette.textDim, &brushDim);
@@ -3534,7 +3680,7 @@ void UIRenderer::DrawCompactInfo(ID2D1DeviceContext* dc) {
     const float s = m_uiScale;
     std::wstring info;
     
-    // [v10.5] Animation mode: show frame-centric info
+    // Initial build with full filename (no truncation)
     if (m_animState.IsAnimated) {
         wchar_t frameBuf[256];
         const wchar_t* dispName = L"Keep";
@@ -3557,15 +3703,35 @@ void UIRenderer::DrawCompactInfo(ID2D1DeviceContext* dc) {
         }
         info = frameBuf;
     } else {
-        info = BuildCompactInfoText();
-
+        info = BuildCompactInfoText(0.0f);
     }
 
-    
     float textW = MeasureTextWidth(info);
+    float nonTextW = 70.0f * s;
+    float panelW = nonTextW + textW;
+    float margin = 8.0f * s;
+    float winCtrlW = GetWindowControlsWidth();
+    float maxAllowedRight = (float)m_width - winCtrlW - margin;
+
+    // Check if full panel exceeds available length
+    float targetStartX = (g_runtime.InfoPanelAlignX == 0) ? (g_runtime.InfoPanelX * s) : ((float)m_width - panelW - g_runtime.InfoPanelX * s);
+    float availablePanelW = maxAllowedRight - targetStartX;
+
+    if (!m_animState.IsAnimated && panelW > availablePanelW && availablePanelW > 0.0f) {
+        auto fullFileOpt = FormatLiteField(L"File", g_currentMetadata, g_imagePath, nullptr, s, this, 0.0f);
+        if (fullFileOpt.has_value()) {
+            float fullFileW = MeasureTextWidth(*fullFileOpt);
+            float otherW = textW - fullFileW;
+            float maxFileW = availablePanelW - nonTextW - otherW;
+            maxFileW = (std::max)(30.0f * s, maxFileW);
+
+            info = BuildCompactInfoText(maxFileW);
+            textW = MeasureTextWidth(info);
+            panelW = nonTextW + textW;
+        }
+    }
     
     float startX = 0.0f;
-    float panelW = 70.0f * s + textW;
     float panelH = 22.0f * s;
     
     if (g_runtime.InfoPanelAlignX == 0) {
@@ -3588,7 +3754,7 @@ void UIRenderer::DrawCompactInfo(ID2D1DeviceContext* dc) {
         startY = (float)m_height - panelH - g_runtime.InfoPanelY * s;
     }
     
-    float margin = 8.0f * s;
+    margin = 8.0f * s;
     startX = std::clamp(startX, margin, (std::max)(margin, (float)m_width - panelW - margin));
     startY = std::clamp(startY, topBoundary + margin, (std::max)(topBoundary + margin, (float)m_height - panelH - margin));
     
@@ -3877,7 +4043,7 @@ D2D1_COLOR_F UIRenderer::LerpColor(const D2D1_COLOR_F& a, const D2D1_COLOR_F& b,
 
 void UIRenderer::DrawInfoPanel(ID2D1DeviceContext* dc) {
     if (!g_runtime.ShowInfoPanel || !m_panelFormat) return;
-    const float s = m_uiScale;
+    const float s = GetInfoPanelScale();
     BuildInfoGrid();  // Populate m_infoGrid from g_currentMetadata before sizing.
     
     // Panel Rect
@@ -3916,8 +4082,12 @@ void UIRenderer::DrawInfoPanel(ID2D1DeviceContext* dc) {
     startX = std::clamp(startX, margin, (std::max)(margin, (float)m_width - width - margin));
     startY = std::clamp(startY, topBoundary + margin, (std::max)(topBoundary + margin, (float)m_height - height - margin));
     
-    if (g_currentMetadata.HasGPS) height += 50.0f * s;
-    if (g_runtime.InfoPanelExpanded && !g_currentMetadata.HistL.empty()) height += 100.0f * s;
+    const std::wstring& allowedItems = g_runtime.ShowCompareInfo ? g_config.InfoPanelFullItemsCompare : g_config.InfoPanelFullItemsNormal;
+    const std::wstring wrappedAllowed = L"," + allowedItems + L",";
+    const bool showGPS = (wrappedAllowed.find(L",GPS,") != std::wstring::npos);
+    if (g_currentMetadata.HasGPS && showGPS) height += 45.0f * s;
+    const bool showHistogram = (wrappedAllowed.find(L",Histogram,") != std::wstring::npos);
+    if (g_runtime.InfoPanelExpanded && !g_currentMetadata.HistR.empty() && showHistogram) height += 80.0f * s;
 
     D2D1_RECT_F panelRect = D2D1::RectF(startX, startY, startX + width, startY + height);
     
@@ -4000,18 +4170,20 @@ void UIRenderer::DrawInfoPanel(ID2D1DeviceContext* dc) {
     float gridStartY = startY + 26.0f * s;
     DrawInfoGrid(dc, startX + padding, gridStartY, width - padding * 2, palette);
     
+    float currentY = startY + 26.0f * s + (float)m_infoGrid.size() * GRID_ROW_HEIGHT * s + 6.0f * s;
+
     // Histogram
-    if (!g_currentMetadata.HistR.empty()) {
+    if (g_runtime.InfoPanelExpanded && showHistogram && !g_currentMetadata.HistR.empty()) {
         float histH = 70.0f * s;
-        float histY = startY + height - padding - histH - (g_currentMetadata.HasGPS ? 45.0f * s : 0);
-        DrawHistogram(dc, D2D1::RectF(startX + padding, histY, startX + width - padding, histY + histH));
+        DrawHistogram(dc, D2D1::RectF(startX + padding, currentY, startX + width - padding, currentY + histH));
+        currentY += 80.0f * s;
     }
     
     // GPS
     m_gpsLinkRect = {}; 
     m_gpsCoordRect = {};
-    if (g_currentMetadata.HasGPS) {
-        float gpsY = startY + height - 55.0f * s;
+    if (g_currentMetadata.HasGPS && showGPS) {
+        float gpsY = currentY;
         
         wchar_t gpsBuf[128];
         swprintf_s(gpsBuf, L"GPS: %.5f, %.5f", g_currentMetadata.Latitude, g_currentMetadata.Longitude);
@@ -4028,6 +4200,7 @@ void UIRenderer::DrawInfoPanel(ID2D1DeviceContext* dc) {
         ComPtr<ID2D1SolidColorBrush> brushLink;
         dc->CreateSolidColorBrush(palette.accent, &brushLink);
         dc->DrawText(L"OpenMap", 7, m_panelFormat.Get(), m_gpsLinkRect, brushLink.Get());
+        currentY += 45.0f * s;
     }
 }
 
@@ -4385,6 +4558,8 @@ namespace {
 }
 
 void UIRenderer::DrawCompareInfoHUD(ID2D1DeviceContext* dc) {
+    const float s = GetInfoPanelScale();
+    const float sUI = m_uiScale; // Window-level geometry (neck/hotspot) uses system DPI scale
     if (!g_runtime.ShowCompareInfo) {
         m_lastHUDRect = {};
         return;
@@ -4392,15 +4567,17 @@ void UIRenderer::DrawCompareInfoHUD(ID2D1DeviceContext* dc) {
     
     // Smart Overlap Avoidance: Hide HUD if top gallery filmstrip is visible or triggering hotspot is active
     extern GalleryOverlay g_gallery;
-    const float s = m_uiScale;
     float cx = m_width / 2.0f;
-    float neckH = 40.0f * s;
-    float neckW = 200.0f * s;
+    float neckH = 40.0f * sUI;
+    float neckW = 200.0f * sUI;
     bool isInNeck = (m_lastMousePos.y >= 0 && m_lastMousePos.y < neckH &&
                      m_lastMousePos.x >= cx - neckW && m_lastMousePos.x <= cx + neckW);
-    bool isHotspotShowing = !g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && (g_config.GalleryTriggerMode == 1 || g_config.GalleryTriggerMode == 2) && (m_width >= 300.0f * s) && (m_height >= 200.0f * s) && isInNeck;
-    if (g_gallery.IsVisible() || isHotspotShowing) {
+    bool isHotspotShowing = !g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && (g_config.GalleryTriggerMode == 1 || g_config.GalleryTriggerMode == 2) && (m_width >= 300.0f * sUI) && (m_height >= 200.0f * sUI) && isInNeck;
+    if (g_gallery.IsVisible() || isHotspotShowing || g_settingsOverlay.IsVisible() || g_helpOverlay.IsVisible() || AppContext::GetInstance().Dialog.IsVisible) {
         m_lastHUDRect = {};
+        m_hudToggleLiteRect = {};
+        m_panelToggleRect = {};
+        m_panelCloseRect = {};
         return;
     }
     CImageLoader::ImageMetadata leftMeta, rightMeta;
@@ -4421,12 +4598,12 @@ void UIRenderer::DrawCompareInfoHUD(ID2D1DeviceContext* dc) {
             bool isWinner = false;
         };
 
-        auto buildMetrics = [&](const CImageLoader::ImageMetadata& m, const std::wstring& path, const CImageLoader::ImageMetadata& other) {
+        auto buildMetrics = [&](const CImageLoader::ImageMetadata& m, const std::wstring& path, const CImageLoader::ImageMetadata& other, float maxFileW = 0.0f) {
             std::vector<LiteMetric> v;
             std::vector<std::wstring> configItems = SplitString(g_config.InfoPanelLiteItemsCompare, L',');
 
             for (const auto& itemKey : configItems) {
-                auto valOpt = FormatLiteField(itemKey, m, path, &other, s, this);
+                auto valOpt = FormatLiteField(itemKey, m, path, &other, s, this, maxFileW);
                 if (valOpt.has_value()) {
                     bool win = false;
                     if (itemKey == L"Size") {
@@ -4447,8 +4624,8 @@ void UIRenderer::DrawCompareInfoHUD(ID2D1DeviceContext* dc) {
             return v;
         };
 
-        auto leftMetrics = buildMetrics(leftMeta, leftMeta.SourcePath, rightMeta);
-        auto rightMetrics = buildMetrics(rightMeta, rightMeta.SourcePath, leftMeta);
+        auto leftMetrics = buildMetrics(leftMeta, leftMeta.SourcePath, rightMeta, 0.0f);
+        auto rightMetrics = buildMetrics(rightMeta, rightMeta.SourcePath, leftMeta, 0.0f);
 
         // Layout and Geometry (Synced with DrawCompactInfo)
         float y = 16.0f * s;
@@ -4480,6 +4657,42 @@ void UIRenderer::DrawCompareInfoHUD(ID2D1DeviceContext* dc) {
         float leftTotalW = GetMetricsTotalWidth(leftMetrics);
         float rightTotalW = GetMetricsTotalWidth(rightMetrics);
 
+        // Calculate available physical boundaries
+        float margin = 8.0f * s;
+        float winCtrlW = GetWindowControlsWidth();
+        float maxRightX = (float)m_width - winCtrlW - margin;
+        float minLeftX = margin;
+
+        // Dynamic truncation for Left Metrics if width is insufficient
+        float maxLeftAllowedTextW = (splitX - centerGap) - (minLeftX + paddingLeft);
+        if (leftTotalW > maxLeftAllowedTextW && maxLeftAllowedTextW > 0.0f) {
+            auto fullLeftFileOpt = FormatLiteField(L"File", leftMeta, leftMeta.SourcePath, &rightMeta, s, this, 0.0f);
+            if (fullLeftFileOpt.has_value()) {
+                float fullLeftFileW = MeasureTextWidth(*fullLeftFileOpt, m_panelFormat.Get());
+                float otherLeftW = leftTotalW - fullLeftFileW;
+                float targetLeftFileW = maxLeftAllowedTextW - otherLeftW;
+                targetLeftFileW = (std::max)(30.0f * s, targetLeftFileW);
+
+                leftMetrics = buildMetrics(leftMeta, leftMeta.SourcePath, rightMeta, targetLeftFileW);
+                leftTotalW = GetMetricsTotalWidth(leftMetrics);
+            }
+        }
+
+        // Dynamic truncation for Right Metrics if width is insufficient
+        float maxRightAllowedTextW = (maxRightX - 58.0f * s) - (splitX + centerGap);
+        if (rightTotalW > maxRightAllowedTextW && maxRightAllowedTextW > 0.0f) {
+            auto fullRightFileOpt = FormatLiteField(L"File", rightMeta, rightMeta.SourcePath, &leftMeta, s, this, 0.0f);
+            if (fullRightFileOpt.has_value()) {
+                float fullRightFileW = MeasureTextWidth(*fullRightFileOpt, m_panelFormat.Get());
+                float otherRightW = rightTotalW - fullRightFileW;
+                float targetRightFileW = maxRightAllowedTextW - otherRightW;
+                targetRightFileW = (std::max)(30.0f * s, targetRightFileW);
+
+                rightMetrics = buildMetrics(rightMeta, rightMeta.SourcePath, leftMeta, targetRightFileW);
+                rightTotalW = GetMetricsTotalWidth(rightMetrics);
+            }
+        }
+
         // Calculate panel dimensions
         float leftTextStart = splitX - centerGap - leftTotalW;
         float rightTextStart = splitX + centerGap;
@@ -4503,12 +4716,12 @@ void UIRenderer::DrawCompareInfoHUD(ID2D1DeviceContext* dc) {
 
         // Smart Overlap Avoidance: Hide if overlaps with top gallery trigger hotspot
         float cx = m_width / 2.0f;
-        float neckH = 40.0f * s;
-        float neckW = 200.0f * s;
+        float neckH = 40.0f * sUI;
+        float neckW = 200.0f * sUI;
         extern GalleryOverlay g_gallery;
         bool isInNeck = (m_lastMousePos.y >= 0 && m_lastMousePos.y < neckH &&
                          m_lastMousePos.x >= cx - neckW && m_lastMousePos.x <= cx + neckW);
-        bool isHotspotShowing = !g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && (g_config.GalleryTriggerMode == 1 || g_config.GalleryTriggerMode == 2) && (m_width >= 300.0f * s) && (m_height >= 200.0f * s) && isInNeck;
+        bool isHotspotShowing = !g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && (g_config.GalleryTriggerMode == 1 || g_config.GalleryTriggerMode == 2) && (m_width >= 300.0f * sUI) && (m_height >= 200.0f * sUI) && isInNeck;
         bool overlapsHotspot = (panelRect.top < neckH && panelRect.right > cx - neckW && panelRect.left < cx + neckW);
         if (isHotspotShowing && overlapsHotspot) {
             m_lastHUDRect = {};
@@ -4627,8 +4840,43 @@ void UIRenderer::DrawCompareInfoHUD(ID2D1DeviceContext* dc) {
     int rightIndex = -1; size_t rightTotal = 0;
     QueryFilePosition(rightMeta.SourcePath, rightIndex, rightTotal);
 
-    auto leftRows = BuildGridRows(leftMeta, leftMeta.SourcePath, true, leftIndex, leftTotal);
-    auto rightRows = BuildGridRows(rightMeta, rightMeta.SourcePath, true, rightIndex, rightTotal);
+    int currentZoom = GetCurrentZoomPercent();
+    bool leftHistR = !leftMeta.HistR.empty();
+    bool rightHistR = !rightMeta.HistR.empty();
+    
+    if (m_compareLeftRows.empty() || m_lastCompareZoom != currentZoom || 
+        m_lastCompareLeftPath != leftMeta.SourcePath || 
+        m_lastCompareRightPath != rightMeta.SourcePath || 
+        m_lastCompareConfig != g_config.InfoPanelFullItemsCompare ||
+        m_lastCompareLeftFullLoaded != leftMeta.IsFullMetadataLoaded ||
+        m_lastCompareRightFullLoaded != rightMeta.IsFullMetadataLoaded ||
+        m_lastCompareLeftHasHistR != leftHistR ||
+        m_lastCompareRightHasHistR != rightHistR ||
+        m_lastCompareLeftHasSharpness != leftMeta.HasSharpness ||
+        m_lastCompareRightHasSharpness != rightMeta.HasSharpness ||
+        m_lastCompareLeftHasEntropy != leftMeta.HasEntropy ||
+        m_lastCompareRightHasEntropy != rightMeta.HasEntropy) {
+        
+        m_lastCompareZoom = currentZoom;
+        m_lastCompareLeftPath = leftMeta.SourcePath;
+        m_lastCompareRightPath = rightMeta.SourcePath;
+        m_lastCompareConfig = g_config.InfoPanelFullItemsCompare;
+        
+        m_lastCompareLeftFullLoaded = leftMeta.IsFullMetadataLoaded;
+        m_lastCompareRightFullLoaded = rightMeta.IsFullMetadataLoaded;
+        m_lastCompareLeftHasHistR = leftHistR;
+        m_lastCompareRightHasHistR = rightHistR;
+        m_lastCompareLeftHasSharpness = leftMeta.HasSharpness;
+        m_lastCompareRightHasSharpness = rightMeta.HasSharpness;
+        m_lastCompareLeftHasEntropy = leftMeta.HasEntropy;
+        m_lastCompareRightHasEntropy = rightMeta.HasEntropy;
+        
+        m_compareLeftRows = BuildGridRows(leftMeta, leftMeta.SourcePath, true, leftIndex, leftTotal);
+        m_compareRightRows = BuildGridRows(rightMeta, rightMeta.SourcePath, true, rightIndex, rightTotal);
+    }
+    
+    auto& leftRows = m_compareLeftRows;
+    auto& rightRows = m_compareRightRows;
 
     // --- Smart Logic (Quality Assessment) ---
     auto GetQualityTag = [](const CImageLoader::ImageMetadata& meta, int& outColor) -> std::wstring {
@@ -4700,18 +4948,19 @@ void UIRenderer::DrawCompareInfoHUD(ID2D1DeviceContext* dc) {
 	    if (hudMode == 0) {
 	        // Lite Mode
 	        hudGroups = {
-	            { L"LITE MODE", { L"File", L"Size", L"Disk", L"Sharp", L"Ent", L"BPP", L"Date" } }
+	            { L"LITE MODE", { L"File", L"RAW", L"Size", L"Disk", L"Sharp", L"Ent", L"BPP", L"Date", L"HDR" } }
 	        };
 	    } else {
 	        hudGroups = {
-	            { AppStrings::HUD_Group_Physical, { L"File", L"Size", L"Disk", L"Date", L"Format" } },
+	            { AppStrings::HUD_Group_Physical, { L"File", L"RAW", L"Size", L"Disk", L"Date", L"Format" } },
 	            { AppStrings::HUD_Group_Scientific, { L"Sharp", L"Ent", L"BPP" } }
 	        };
 	        if (hudMode == 2) {
 	            // Full mode includes optics plus richer encoding/color information.
 	            hudGroups.push_back({ AppStrings::HUD_Group_Encoding, { L"Camera", L"Exp", L"Lens", L"Focal", L"Profile", L"Flash", L"W.Bal", L"Meter", L"Prog", L"Program" } });
+	            hudGroups.push_back({ L"HDR & GainMap", { L"HDR Pro", L"D.Range", L"BitDepth", L"Transfer", L"Gamut", L"MaxCLL", L"MaxFALL", L"Mastering", L"Pipeline", L"ImagePeak", L"Display", L"Base", L"GainMap", L"GainRatio", L"Blend" } });
 	        }
-		    }
+	    }
 
 		    const float rowH = 20.0f * s;
 		    const float padding = 6.0f * s;
@@ -4771,7 +5020,10 @@ void UIRenderer::DrawCompareInfoHUD(ID2D1DeviceContext* dc) {
     }
 
     // Add Histogram Space
-    bool hasHistogram = hudMode > 0 && (!leftMeta.HistR.empty() || !rightMeta.HistR.empty());
+    const std::wstring& allowedItemsCompare = g_config.InfoPanelFullItemsCompare;
+    const std::wstring wrappedAllowedCompare = L"," + allowedItemsCompare + L",";
+    const bool showHistogramCompare = (wrappedAllowedCompare.find(L",Histogram,") != std::wstring::npos);
+    bool hasHistogram = hudMode > 0 && showHistogramCompare && (!leftMeta.HistR.empty() || !rightMeta.HistR.empty());
     const float histH = hasHistogram ? (60.0f * s) : 0;
     const float histMargin = hasHistogram ? (8.0f * s) : 0;
 

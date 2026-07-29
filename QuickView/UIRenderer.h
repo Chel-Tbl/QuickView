@@ -173,6 +173,7 @@ public:
     
     // ===== Window Controls Hit Testing =====
     WindowControlHit HitTestWindowControls(float x, float y);
+    float GetWindowControlsWidth() const;
     
     // Backward compatibility
     bool Render(HWND hwnd, float deltaTime) { return RenderAll(hwnd, deltaTime); }
@@ -219,7 +220,7 @@ private:
         std::wstring reference;     // Typical range
     };
     
-    std::wstring BuildCompactInfoText() const;
+    std::wstring BuildCompactInfoText(float maxFileW = 0.0f) const;
     std::vector<InfoRow> BuildGridRows(const CImageLoader::ImageMetadata& metadata, const std::wstring& imagePath, bool showAdvanced = false, int positionIndex = -1, size_t positionTotal = 0) const;
     TooltipInfo GetTooltipInfo(std::wstring_view label) const;
     
@@ -248,6 +249,7 @@ public:
     float MeasureTextHeight(std::wstring_view text, IDWriteTextFormat* format = nullptr, float maxWidth = 2000.0f);
     std::wstring MakeMiddleEllipsis(float maxWidth, std::wstring_view text, IDWriteTextFormat* format = nullptr);
     std::wstring MakeEndEllipsis(float maxWidth, std::wstring_view text, IDWriteTextFormat* format = nullptr);
+    float GetInfoPanelScale() const;
 
 private:
     // Dirty Rects calculation
@@ -272,6 +274,43 @@ private:
     D2D1_RECT_F m_panelToggleRect = {};
     D2D1_RECT_F m_panelCloseRect = {};
     D2D1_RECT_F m_hdrDetailsToggleRect = {};
+    
+    // Cache tracking for info grid
+    int m_lastInfoZoom = -1;
+    std::wstring m_lastInfoImagePath;
+    std::wstring m_lastInfoConfig;
+    bool m_lastInfoFullLoaded = false;
+    bool m_lastInfoHasSharpness = false;
+    bool m_lastInfoHasEntropy = false;
+    bool m_lastInfoHasHistR = false;
+    
+    // Cache tracking for compact info
+    int m_lastCompactInfoZoom = -1;
+    std::wstring m_lastCompactInfoImagePath;
+    std::wstring m_lastCompactInfoConfig;
+    bool m_lastCompactInfoFullLoaded = false;
+    bool m_lastCompactInfoHasSharpness = false;
+    bool m_lastCompactInfoHasEntropy = false;
+    bool m_lastCompactInfoHasHistR = false;
+    float m_lastCompactInfoMaxFileW = -1.0f;
+    std::wstring m_lastCompactInfoText;
+    
+    // Cache tracking for compare info
+    int m_lastCompareZoom = -1;
+    std::wstring m_lastCompareLeftPath;
+    std::wstring m_lastCompareRightPath;
+    std::wstring m_lastCompareConfig;
+    bool m_lastCompareLeftFullLoaded = false;
+    bool m_lastCompareRightFullLoaded = false;
+    bool m_lastCompareLeftHasHistR = false;
+    bool m_lastCompareRightHasHistR = false;
+    bool m_lastCompareLeftHasSharpness = false;
+    bool m_lastCompareRightHasSharpness = false;
+    bool m_lastCompareLeftHasEntropy = false;
+    bool m_lastCompareRightHasEntropy = false;
+    std::vector<InfoRow> m_compareLeftRows;
+    std::vector<InfoRow> m_compareRightRows;
+    
     D2D1_RECT_F m_gpsCoordRect = {};
     D2D1_RECT_F m_gpsLinkRect = {};
     D2D1_RECT_F m_lastHUDRect = {}; // Track HUD area for hit testing
@@ -352,6 +391,7 @@ private:
     ComPtr<IDWriteTextFormat> m_osdFormat;
     ComPtr<IDWriteTextFormat> m_debugFormat;
     ComPtr<IDWriteTextFormat> m_panelFormat;  // For Info Panel text
+    float m_lastPanelScale = -1.0f;
     ComPtr<IDWriteTextFormat> m_welcomeTitleFormat;
     ComPtr<IDWriteTextFormat> m_welcomeSubtitleFormat;
     ComPtr<IDWriteTextFormat> m_welcomeBtnFormat;

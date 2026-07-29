@@ -22,6 +22,7 @@ extern FireAndForget LoadImageAsync(HWND hwnd, std::wstring path, bool showOSD =
 extern void RequestRepaint(QuickView::PaintLayer layer);
 extern float ClampCompareRatio(float ratio);
 extern FireAndForget UpdateCompareLeftHistogramAsync(HWND hwnd, std::wstring path);
+extern bool IsTelemetryNeeded();
 extern void AdjustWindowForOverlay(HWND hwnd, bool restore);
 extern void SnapWindowToCompareImages(HWND hwnd);
 extern void RefreshImageDisplay(HWND hwnd);
@@ -604,7 +605,7 @@ void CompareController::EnterMode(HWND hwnd) {
     
     // [v10.0] Trigger Metrics for Left Image (A) if HUD is active
     // [Fix] Must call AFTER CompareActive=true so IsActive() check passes
-    if (g_runtime.ShowCompareInfo && (GetPaneContext(PaneSlot::Left).metadata.HistL.empty() || !GetPaneContext(PaneSlot::Left).metadata.IsFullMetadataLoaded)) {
+    if (g_runtime.ShowCompareInfo && IsTelemetryNeeded() && (GetPaneContext(PaneSlot::Left).metadata.HistL.empty() || !GetPaneContext(PaneSlot::Left).metadata.IsFullMetadataLoaded)) {
         UpdateCompareLeftHistogramAsync(hwnd, GetPaneContext(PaneSlot::Left).path);
     }
 

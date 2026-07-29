@@ -667,6 +667,9 @@ struct AppConfig {
     // --- Customizable Info Panel Lite ---
     std::wstring InfoPanelLiteItemsNormal = L"Zoom,Progress,File,Size,Disk,Format";
     std::wstring InfoPanelLiteItemsCompare = L"File,Size,Disk,Sharp,Ent,BPP,Date";
+    std::wstring InfoPanelFullItemsNormal = L"Histogram,File,Position,RAW,Size,Disk,Date,Camera,Exp,Lens,Focal,Profile,HDR,Flash,W.Bal,Meter,Prog,Program,Format,GPS";
+    std::wstring InfoPanelFullItemsCompare = L"Histogram,File,RAW,Size,Disk,Date,Camera,Exp,Lens,Focal,Profile,HDR,Flash,W.Bal,Meter,Prog,Program,Format,Sharp,Ent,BPP,GPS";
+    int InfoPanelScale = 0; // 0=Global, 1=100%, 2=125%, 3=150%, 4=175%, 5=200%
     std::wstring InfoPanelLiteSeparator = L" \u00b7 ";
     
     // --- Save Options --- (Functional options removed, fully automated/smart)

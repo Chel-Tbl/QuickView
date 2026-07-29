@@ -3251,6 +3251,33 @@ static float ComputeBaseFitScaleForVisual(const VisualState& vs, float winW, flo
 
 
 
+bool IsTelemetryNeeded() {
+    if (g_runtime.ShowCompareInfo) {
+        if (g_runtime.CompareHudMode == 1 || g_runtime.CompareHudMode == 0) {
+            if (g_config.InfoPanelLiteItemsCompare.find(L"Sharp") != std::wstring::npos ||
+                g_config.InfoPanelLiteItemsCompare.find(L"Ent") != std::wstring::npos ||
+                g_config.InfoPanelLiteItemsCompare.find(L"BPP") != std::wstring::npos) return true;
+        } else if (g_runtime.CompareHudMode == 2) {
+            if (g_config.InfoPanelFullItemsCompare.find(L"Sharp") != std::wstring::npos ||
+                g_config.InfoPanelFullItemsCompare.find(L"Ent") != std::wstring::npos ||
+                g_config.InfoPanelFullItemsCompare.find(L"BPP") != std::wstring::npos ||
+                g_config.InfoPanelFullItemsCompare.find(L"Histogram") != std::wstring::npos) return true;
+        }
+    } else {
+        if (g_runtime.ShowInfoPanel && g_runtime.InfoPanelExpanded) {
+            if (g_config.InfoPanelFullItemsNormal.find(L"Histogram") != std::wstring::npos ||
+                g_config.InfoPanelFullItemsNormal.find(L"Sharp") != std::wstring::npos ||
+                g_config.InfoPanelFullItemsNormal.find(L"Ent") != std::wstring::npos ||
+                g_config.InfoPanelFullItemsNormal.find(L"BPP") != std::wstring::npos) return true;
+        } else if (g_runtime.ShowInfoPanel) {
+            if (g_config.InfoPanelLiteItemsNormal.find(L"Sharp") != std::wstring::npos ||
+                g_config.InfoPanelLiteItemsNormal.find(L"Ent") != std::wstring::npos ||
+                g_config.InfoPanelLiteItemsNormal.find(L"BPP") != std::wstring::npos) return true;
+        }
+    }
+    return false;
+}
+
 static void ToggleCompareHUD(HWND hwnd, int targetMode) {
     if (!g_runtime.ShowCompareInfo) {
         g_runtime.ShowCompareInfo = true;
@@ -3263,11 +3290,13 @@ static void ToggleCompareHUD(HWND hwnd, int targetMode) {
 
     g_toolbar.SetCompareInfoState(g_runtime.ShowCompareInfo);
     if (g_runtime.ShowCompareInfo) {
-        if (GetPaneContext(PaneSlot::Primary).metadata.HistL.empty() && !GetPaneContext(PaneSlot::Primary).path.empty()) {
-            UpdateHistogramAsync(hwnd, GetPaneContext(PaneSlot::Primary).path);
-        }
-        if ((GetPaneContext(PaneSlot::Left).metadata.HistL.empty() || !GetPaneContext(PaneSlot::Left).metadata.IsFullMetadataLoaded) && !GetPaneContext(PaneSlot::Left).path.empty()) {
-            UpdateCompareLeftHistogramAsync(hwnd, GetPaneContext(PaneSlot::Left).path);
+        if (IsTelemetryNeeded()) {
+            if (GetPaneContext(PaneSlot::Primary).metadata.HistL.empty() && !GetPaneContext(PaneSlot::Primary).path.empty()) {
+                UpdateHistogramAsync(hwnd, GetPaneContext(PaneSlot::Primary).path);
+            }
+            if ((GetPaneContext(PaneSlot::Left).metadata.HistL.empty() || !GetPaneContext(PaneSlot::Left).metadata.IsFullMetadataLoaded) && !GetPaneContext(PaneSlot::Left).path.empty()) {
+                UpdateCompareLeftHistogramAsync(hwnd, GetPaneContext(PaneSlot::Left).path);
+            }
         }
         
         // Elastic HUD: Expand window if it's too small for the HUD
@@ -4401,6 +4430,9 @@ void SaveConfig() {
     WritePrivateProfileStringW(L"Controls", L"InfoPanelLiteItemsNormal", g_config.InfoPanelLiteItemsNormal.c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"Controls", L"InfoPanelLiteItemsCompare", g_config.InfoPanelLiteItemsCompare.c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"Controls", L"InfoPanelLiteSeparator", wrappedSeparator.c_str(), iniPath.c_str());
+    WritePrivateProfileStringW(L"Controls", L"InfoPanelFullItemsNormal", g_config.InfoPanelFullItemsNormal.c_str(), iniPath.c_str());
+    WritePrivateProfileStringW(L"Controls", L"InfoPanelFullItemsCompare", g_config.InfoPanelFullItemsCompare.c_str(), iniPath.c_str());
+    WriteConfigInt(L"Controls", L"InfoPanelScale", g_config.InfoPanelScale, iniPath.c_str());
 
     // Image
     WriteConfigInt(L"Image", L"AutoRotate", g_config.AutoRotate, iniPath.c_str());
@@ -4733,10 +4765,24 @@ void LoadConfig() {
     g_config.InfoPanelLiteItemsCompare = bufLiteItems;
 
     // Normalize loaded CSV configs (de-duplicate, check against allowed tags, limit to kInfoPanelLiteMaxItems (8))
-    std::vector<std::wstring> allowedNormal = { L"Zoom", L"Progress", L"File", L"Size", L"Disk", L"Format", L"Camera", L"Exp", L"Lens", L"Focal", L"Date", L"Flash", L"GPS", L"Profile" };
-    std::vector<std::wstring> allowedCompare = { L"File", L"Size", L"Disk", L"Sharp", L"Ent", L"BPP", L"Date", L"Progress", L"Zoom", L"Format", L"Camera", L"Exp", L"Lens", L"Focal", L"Flash", L"GPS", L"Profile" };
+    std::vector<std::wstring> allowedNormal = { L"Zoom", L"Progress", L"File", L"Size", L"Disk", L"Date", L"Format", L"Sharp", L"Ent", L"BPP", L"Camera", L"Exp", L"Lens", L"Focal", L"Profile", L"HDR", L"Flash", L"W.Bal", L"Meter", L"Prog", L"Program", L"GPS" };
+    std::vector<std::wstring> allowedCompare = { L"Zoom", L"Progress", L"File", L"Size", L"Disk", L"Date", L"Format", L"Sharp", L"Ent", L"BPP", L"Camera", L"Exp", L"Lens", L"Focal", L"Profile", L"HDR", L"Flash", L"W.Bal", L"Meter", L"Prog", L"Program" };
     g_config.InfoPanelLiteItemsNormal = QuickView::NormalizeCSV(g_config.InfoPanelLiteItemsNormal, allowedNormal, 8);
     g_config.InfoPanelLiteItemsCompare = QuickView::NormalizeCSV(g_config.InfoPanelLiteItemsCompare, allowedCompare, 8);
+
+    wchar_t bufFullItems[1024];
+    GetPrivateProfileStringW(L"Controls", L"InfoPanelFullItemsNormal", L"Histogram,File,Position,RAW,Size,Disk,Date,Camera,Exp,Lens,Focal,Profile,HDR,Flash,W.Bal,Meter,Prog,Program,Format,GPS", bufFullItems, 1024, iniPath.c_str());
+    g_config.InfoPanelFullItemsNormal = bufFullItems;
+    
+    GetPrivateProfileStringW(L"Controls", L"InfoPanelFullItemsCompare", L"Histogram,File,RAW,Size,Disk,Date,Camera,Exp,Lens,Focal,Profile,HDR,Flash,W.Bal,Meter,Prog,Program,Format,Sharp,Ent,BPP,GPS", bufFullItems, 1024, iniPath.c_str());
+    g_config.InfoPanelFullItemsCompare = bufFullItems;
+    
+    g_config.InfoPanelScale = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"Controls", L"InfoPanelScale", 0, iniPath.c_str())), 0, 5);
+    
+    std::vector<std::wstring> allowedFullNormal = { L"Histogram", L"File", L"Position", L"RAW", L"Size", L"Disk", L"Date", L"Camera", L"Exp", L"Lens", L"Focal", L"Profile", L"HDR", L"Flash", L"W.Bal", L"Meter", L"Prog", L"Program", L"Format", L"Sharp", L"Ent", L"BPP", L"GPS" };
+    std::vector<std::wstring> allowedFullCompare = { L"Histogram", L"File", L"RAW", L"Size", L"Disk", L"Date", L"Camera", L"Exp", L"Lens", L"Focal", L"Profile", L"HDR", L"Flash", L"W.Bal", L"Meter", L"Prog", L"Program", L"Format", L"Sharp", L"Ent", L"BPP" };
+    g_config.InfoPanelFullItemsNormal = QuickView::NormalizeCSV(g_config.InfoPanelFullItemsNormal, allowedFullNormal, 99);
+    g_config.InfoPanelFullItemsCompare = QuickView::NormalizeCSV(g_config.InfoPanelFullItemsCompare, allowedFullCompare, 99);
 
     wchar_t bufSeparator[64];
     GetPrivateProfileStringW(L"Controls", L"InfoPanelLiteSeparator", L"\" \u00b7 \"", bufSeparator, 64, iniPath.c_str());
@@ -9169,7 +9215,7 @@ SKIP_EDGE_NAV:;
                      } else {
                          g_runtime.CompareHudMode = 0;
                      }
-                     if (g_runtime.ShowCompareInfo) {
+                     if (g_runtime.ShowCompareInfo && IsTelemetryNeeded()) {
                          if (GetPaneContext(PaneSlot::Primary).metadata.HistL.empty() && !GetPaneContext(PaneSlot::Primary).path.empty()) UpdateHistogramAsync(hwnd, GetPaneContext(PaneSlot::Primary).path);
                          if ((GetPaneContext(PaneSlot::Left).metadata.HistL.empty() || !GetPaneContext(PaneSlot::Left).metadata.IsFullMetadataLoaded) && !GetPaneContext(PaneSlot::Left).path.empty())
                              UpdateCompareLeftHistogramAsync(hwnd, GetPaneContext(PaneSlot::Left).path);
@@ -9184,7 +9230,7 @@ SKIP_EDGE_NAV:;
                      } else {
                          g_runtime.CompareHudMode = 2;
                      }
-                     if (g_runtime.ShowCompareInfo) {
+                     if (g_runtime.ShowCompareInfo && IsTelemetryNeeded()) {
                          if (GetPaneContext(PaneSlot::Primary).metadata.HistL.empty() && !GetPaneContext(PaneSlot::Primary).path.empty()) UpdateHistogramAsync(hwnd, GetPaneContext(PaneSlot::Primary).path);
                          if ((GetPaneContext(PaneSlot::Left).metadata.HistL.empty() || !GetPaneContext(PaneSlot::Left).metadata.IsFullMetadataLoaded) && !GetPaneContext(PaneSlot::Left).path.empty())
                              UpdateCompareLeftHistogramAsync(hwnd, GetPaneContext(PaneSlot::Left).path);
@@ -11154,7 +11200,7 @@ SKIP_EDGE_NAV:;
                     RestoreOverlayWindowState(hwnd);
                 }
                 g_runtime.InfoPanelExpanded = (g_config.ToolbarInfoDefault == 1); // 0=Lite, 1=Full
-                if (GetPaneContext(PaneSlot::Primary).metadata.HistR.empty() && !GetPaneContext(PaneSlot::Primary).path.empty()) {
+                if (IsTelemetryNeeded() && GetPaneContext(PaneSlot::Primary).metadata.HistR.empty() && !GetPaneContext(PaneSlot::Primary).path.empty()) {
                     UpdateHistogramAsync(hwnd, GetPaneContext(PaneSlot::Primary).path);
                 }
             }
@@ -11229,7 +11275,7 @@ SKIP_EDGE_NAV:;
         case IDM_FULL_INFO:
              g_runtime.ShowInfoPanel = true;
              g_runtime.InfoPanelExpanded = true; // Full = expanded
-             if (GetPaneContext(PaneSlot::Primary).metadata.HistR.empty() && !GetPaneContext(PaneSlot::Primary).path.empty()) {
+             if (IsTelemetryNeeded() && GetPaneContext(PaneSlot::Primary).metadata.HistR.empty() && !GetPaneContext(PaneSlot::Primary).path.empty()) {
                  UpdateHistogramAsync(hwnd, GetPaneContext(PaneSlot::Primary).path);
              }
              g_toolbar.SetExifState(true);
@@ -11717,7 +11763,7 @@ void ProcessEngineEvents(HWND hwnd) {
                     cb(true);
                 }
                 
-                if (g_runtime.ShowCompareInfo && (pane.metadata.HistL.empty() || !pane.metadata.IsFullMetadataLoaded)) {
+                if (g_runtime.ShowCompareInfo && IsTelemetryNeeded() && (pane.metadata.HistL.empty() || !pane.metadata.IsFullMetadataLoaded)) {
                     UpdateCompareLeftHistogramAsync(hwnd, pane.path);
                 }
                 RefreshCompareRawUI(hwnd);
@@ -12182,7 +12228,7 @@ void ProcessEngineEvents(HWND hwnd) {
 
                 // [HUD & Info Panel] Trigger metrics calculation if visible
                 if (!isPreview && (g_runtime.ShowCompareInfo || (g_runtime.ShowInfoPanel && g_runtime.InfoPanelExpanded))) {
-                    if (GetPaneContext(PaneSlot::Primary).metadata.HistL.empty() && !GetPaneContext(PaneSlot::Primary).path.empty()) {
+                    if (IsTelemetryNeeded() && GetPaneContext(PaneSlot::Primary).metadata.HistL.empty() && !GetPaneContext(PaneSlot::Primary).path.empty()) {
                         UpdateHistogramAsync(hwnd, GetPaneContext(PaneSlot::Primary).path);
                     }
                 }
@@ -12337,7 +12383,7 @@ void ProcessEngineEvents(HWND hwnd) {
                 RefreshImageDisplay(hwnd);
 
                 // [v10.3.1] Trigger Histogram Refresh for HDR Gain Map
-                if (g_runtime.ShowInfoPanel && g_runtime.InfoPanelExpanded) {
+                if (g_runtime.ShowInfoPanel && g_runtime.InfoPanelExpanded && IsTelemetryNeeded()) {
                     UpdateHistogramAsync(hwnd, evt.filePath);
                 }
 
@@ -14892,13 +14938,13 @@ bool HandleHotkeyAction(HWND hwnd, HotkeyAction action) {
                 }
                 g_runtime.ShowInfoPanel = true;
                 g_runtime.InfoPanelExpanded = true;
-                if (GetPaneContext(PaneSlot::Primary).metadata.HistR.empty() && !GetPaneContext(PaneSlot::Primary).path.empty()) {
+                if (IsTelemetryNeeded() && GetPaneContext(PaneSlot::Primary).metadata.HistR.empty() && !GetPaneContext(PaneSlot::Primary).path.empty()) {
                     UpdateHistogramAsync(hwnd, GetPaneContext(PaneSlot::Primary).path);
                 }
                 g_toolbar.SetExifState(true);
             } else if (!g_runtime.InfoPanelExpanded) {
                 g_runtime.InfoPanelExpanded = true;
-                if (GetPaneContext(PaneSlot::Primary).metadata.HistR.empty() && !GetPaneContext(PaneSlot::Primary).path.empty()) {
+                if (IsTelemetryNeeded() && GetPaneContext(PaneSlot::Primary).metadata.HistR.empty() && !GetPaneContext(PaneSlot::Primary).path.empty()) {
                     UpdateHistogramAsync(hwnd, GetPaneContext(PaneSlot::Primary).path);
                 }
             } else {
