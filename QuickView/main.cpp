@@ -2708,8 +2708,24 @@ DialogLayout CalculateDialogLayout(D2D1_SIZE_F size) {
     int titleLines = (int)(AppContext::GetInstance().Dialog.Title.length() / 20) + 1;
     if (titleLines > 3) titleLines = 3;  // Max 3 lines
     
-    // Message usually single line
-    int msgLines = 1;
+    // Estimate message wrapping and explicit line breaks (\n)
+    const std::wstring& msgStr = AppContext::GetInstance().Dialog.Message;
+    int msgLines = 0;
+    size_t startPos = 0;
+    while (startPos < msgStr.length()) {
+        size_t nextPos = msgStr.find(L'\n', startPos);
+        std::wstring_view line = (nextPos == std::wstring::npos) ? 
+            std::wstring_view(msgStr.c_str() + startPos) : 
+            std::wstring_view(msgStr.c_str() + startPos, nextPos - startPos);
+        
+        int subLines = static_cast<int>(line.length() / 20) + 1;
+        msgLines += subLines;
+
+        if (nextPos == std::wstring::npos) break;
+        startPos = nextPos + 1;
+    }
+    if (msgLines < 1) msgLines = 1;
+    if (msgLines > 8) msgLines = 8;
     
     float contentHeight = (titleLines * titleHeight) + (msgLines * messageHeight);
     float qualityHeight = !AppContext::GetInstance().Dialog.QualityText.empty() ? 28.0f * s : 0.0f; // Add space for quality text
@@ -2720,7 +2736,7 @@ DialogLayout CalculateDialogLayout(D2D1_SIZE_F size) {
     
     float dlgH = padding + contentHeight + qualityHeight + inputHeight + checkboxHeight + buttonsHeight + 20.0f * s; 
     if (dlgH < 160.0f * s) dlgH = 160.0f * s;
-    if (dlgH > 350.0f * s) dlgH = 350.0f * s;
+    if (dlgH > 480.0f * s) dlgH = 480.0f * s;
     
     auto clamp = [](float v, float minV, float maxV) {
         if (v < minV) return minV;
@@ -10491,6 +10507,13 @@ SKIP_EDGE_NAV:;
         int menuCmsMode = contextLeft ? (GetPaneContext(PaneSlot::Left).CmsModeOverride != -1 ? GetPaneContext(PaneSlot::Left).CmsModeOverride : (g_config.ColorManagement ? 1 : 0)) : g_runtime.GetEffectiveCmsMode(g_config.ColorManagement);
         bool menuEnableSoftProofing = contextLeft ? GetPaneContext(PaneSlot::Left).EnableSoftProofing : g_runtime.EnableSoftProofing;
         std::wstring menuSoftProofPath = contextLeft ? GetPaneContext(PaneSlot::Left).SoftProofProfilePath : g_runtime.SoftProofProfilePath;
+
+        // [Fix] Snap any in-progress gallery fade-out before opening the popup menu.
+        // The fade animation drives high-frequency DComp Present() which destabilizes
+        // the menu's DWM Acrylic/Mica backdrop composition, causing a translucent flash.
+        if (g_gallery.IsVisible()) {
+            g_gallery.ForceFinishTransition();
+        }
 
         ShowContextMenu(hwnd, pt, hasImage, extensionFixNeeded, g_runtime.LockWindowSize, g_runtime.ShowInfoPanel, g_runtime.InfoPanelExpanded, g_config.AlwaysOnTop, renderRaw, isRaw, IsZoomed(hwnd) != 0, g_runtime.CrossMonitorMode, IsCompareModeActive(), isPixelArtMode, menuCmsMode, menuEnableSoftProofing, menuSoftProofPath);
         return 0;

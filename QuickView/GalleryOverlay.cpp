@@ -6,6 +6,7 @@
 #include "ImageTypes.h"
 #include "FileNavigator.h"
 #include "EditState.h"
+#include "GeekContextMenu.h"
 #include "UIRenderer.h"
 #include <algorithm>
 #include <cmath>
@@ -320,8 +321,22 @@ void GalleryOverlay::Update(float deltaTime, HWND hwnd) {
             }
         }
         
+        // [Fix] When a context menu popup is active, freeze auto-dismiss entirely.
+        // Running the fade-out animation while a DComp popup is open wastes GPU frames
+        // and destabilizes the popup's DWM Acrylic/Mica backdrop composition.
+        const bool menuOpen = QuickView::UI::Menu::GeekContextMenu::IsMenuOpen();
+        if (menuOpen) {
+            m_dismissalTimer = 0.0f;
+            // Snap any in-progress fade to its target so we stop driving repaints.
+            if (fabsf(m_transitionProgress - m_targetProgress) > 0.001f) {
+                m_transitionProgress = m_targetProgress;
+                m_gridProgress = m_targetGridProgress;
+                repaintNeeded = true;
+            }
+        }
+
         extern bool g_isDraggingFilmstrip;
-        if (!m_mouseInGallery && !m_isPinned && !g_isDraggingFilmstrip && !g_imagePath.empty() && m_mode != GalleryMode::FullGrid && m_targetGridProgress < 0.5f) {
+        if (!menuOpen && !m_mouseInGallery && !m_isPinned && !g_isDraggingFilmstrip && !g_imagePath.empty() && m_mode != GalleryMode::FullGrid && m_targetGridProgress < 0.5f) {
             m_dismissalTimer += deltaTime;
             if (m_dismissalTimer >= g_config.GalleryExitDelay) {
                 Close(true);

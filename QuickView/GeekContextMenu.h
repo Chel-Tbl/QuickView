@@ -110,6 +110,7 @@ public:
                                  std::vector<GeekMenuItem> items,
                                  GeekContextMenu* parentMenu);
     static void DismissAll(UINT cmdId = 0);
+    static bool IsMenuOpen() { return s_root != nullptr; }
     static void EnsureClassRegistered();
 
 private:

@@ -57,6 +57,12 @@ public:
   }
   float GetRippleProgress() const { return m_hotspotRippleProgress; }
 
+  // Force-finish any in-progress fade transition (skip remaining animation frames)
+  void ForceFinishTransition() {
+    m_transitionProgress = m_targetProgress;
+    m_gridProgress = m_targetGridProgress;
+  }
+
   // Pin (persistent filmstrip) mode
   void TogglePin() { m_isPinned = !m_isPinned; }
   void SetPinned(bool pinned) { m_isPinned = pinned; }

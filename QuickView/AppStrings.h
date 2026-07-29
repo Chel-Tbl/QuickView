@@ -242,6 +242,7 @@ namespace AppStrings {
     extern const wchar_t* Settings_Tab_Shortcuts;
     extern const wchar_t* Settings_Hotkey_PressKey;
     extern const wchar_t* Settings_Hotkey_Conflict;
+    extern const wchar_t* Settings_Hotkey_ConflictPrompt;
     extern const wchar_t* Settings_Hotkey_Restore;
     extern const wchar_t* Settings_Hotkey_Restored;
     extern const wchar_t* Settings_Hotkey_MouseTip;

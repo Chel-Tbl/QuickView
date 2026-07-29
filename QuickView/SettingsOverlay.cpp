@@ -5001,11 +5001,32 @@ void SettingsOverlay::OnHotkeyCaptured(const KeyCombo& combo) {
 
     if (conflictAction != HotkeyAction::None) {
         std::wstring actionName = AppStrings::GetHotkeyActionName(conflictAction);
-        std::wstring warnMsg = std::wstring(AppStrings::Settings_Hotkey_Conflict) + L": " + actionName;
-        
-        m_lastConflictAction = action;
-        m_lastConflictMsg = warnMsg;
-        m_lastConflictTime = GetTickCount();
+        wchar_t contentBuf[512] = { 0 };
+        swprintf_s(contentBuf, 512, AppStrings::Settings_Hotkey_ConflictPrompt, actionName.c_str());
+
+        std::vector<DialogButton> buttons = {
+            { DialogResult::Yes, AppStrings::Dialog_ButtonContinue, true },
+            { DialogResult::Cancel, AppStrings::Dialog_Cancel }
+        };
+
+        DialogResult result = AppContext::GetInstance().DialogCtrl->ShowDialog(
+            m_hwnd,
+            AppStrings::Settings_Hotkey_Conflict,
+            contentBuf,
+            D2D1::ColorF(D2D1::ColorF::DodgerBlue),
+            buttons
+        );
+
+        if (result == DialogResult::Yes) {
+            for (auto& binding : g_hotkeys) {
+                if (binding.action == conflictAction) {
+                    binding.combo = KeyCombo{};
+                } else if (binding.action == action) {
+                    binding.combo = combo;
+                }
+            }
+            SaveConfig();
+        }
     } else {
         // Apply new key combo
         for (auto& binding : g_hotkeys) {

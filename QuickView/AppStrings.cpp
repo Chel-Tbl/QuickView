@@ -59,6 +59,7 @@ const wchar_t *Settings_Tab_About = nullptr;
 const wchar_t *Settings_Tab_Shortcuts = nullptr;
 const wchar_t *Settings_Hotkey_PressKey = nullptr;
 const wchar_t *Settings_Hotkey_Conflict = nullptr;
+const wchar_t *Settings_Hotkey_ConflictPrompt = nullptr;
 const wchar_t *Settings_Hotkey_Restore = nullptr;
 const wchar_t *Settings_Hotkey_Restored = nullptr;
 const wchar_t *Settings_Hotkey_MouseTip = nullptr;
@@ -6140,6 +6141,7 @@ void SetLanguage(Language lang) {
     Settings_Tab_Shortcuts = L"快捷键";
     Settings_Hotkey_PressKey = L"请按下按键...";
     Settings_Hotkey_Conflict = L"快捷键冲突";
+    Settings_Hotkey_ConflictPrompt = L"已由“%s”占用，继续将清除其快捷键。";
     Settings_Hotkey_Restore = L"恢复快捷键默认值";
     Settings_Hotkey_Restored = L"已恢复";
     Settings_Hotkey_MouseTip = L"提示：支持鼠标中键、侧键等鼠标多功能按键。更多侧键请在鼠标驱动中映射为键盘按键后绑定。";
@@ -6151,6 +6153,7 @@ void SetLanguage(Language lang) {
     Settings_Tab_Shortcuts = L"快捷鍵";
     Settings_Hotkey_PressKey = L"請按下按鍵...";
     Settings_Hotkey_Conflict = L"快捷鍵衝突";
+    Settings_Hotkey_ConflictPrompt = L"已由「%s」佔用，繼續將清除其快捷鍵。";
     Settings_Hotkey_Restore = L"恢復快捷鍵預設值";
     Settings_Hotkey_Restored = L"已恢復";
     Settings_Hotkey_MouseTip = L"提示：支持滑鼠中鍵、側鍵等滑鼠多功能按鍵。更多側鍵請在滑鼠驅動中映射為鍵盤按鍵後綁定。";
@@ -6162,6 +6165,7 @@ void SetLanguage(Language lang) {
     Settings_Tab_Shortcuts = L"ショートカット";
     Settings_Hotkey_PressKey = L"キーを押してください...";
     Settings_Hotkey_Conflict = L"キーの競合";
+    Settings_Hotkey_ConflictPrompt = L"「%s」で使用中。続行すると割り当てを解除します。";
     Settings_Hotkey_Restore = L"既定のショートカットに戻す";
     Settings_Hotkey_Restored = L"復元されました";
     Settings_Hotkey_MouseTip = L"ヒント：中央ボタンやサイドボタンなどのマウス多機能ボタンに対応しています。その他のサイドボタンは、マウスのドライバーでキーボードのキーにマッピングしてからバインドしてください。";
@@ -6173,6 +6177,7 @@ void SetLanguage(Language lang) {
     Settings_Tab_Shortcuts = L"Клавиши";
     Settings_Hotkey_PressKey = L"Нажмите клавиши...";
     Settings_Hotkey_Conflict = L"Конфликт клавиш";
+    Settings_Hotkey_ConflictPrompt = L"Занято «%s». Продолжение сбросит привязку.";
     Settings_Hotkey_Restore = L"Сбросить горячие клавиши";
     Settings_Hotkey_Restored = L"Восстановлено";
     Settings_Hotkey_MouseTip = L"Подсказка: поддерживаются средняя кнопка, боковые и другие многофункциональные кнопки мыши. Для сопоставления дополнительных кнопок сначала назначьте их на клавиши клавиатуры в драйвере мыши.";
@@ -6184,6 +6189,7 @@ void SetLanguage(Language lang) {
     Settings_Tab_Shortcuts = L"Kürzel";
     Settings_Hotkey_PressKey = L"Tasten drücken...";
     Settings_Hotkey_Conflict = L"Tastenkonflikt";
+    Settings_Hotkey_ConflictPrompt = L"Bereits von „%s“ belegt. Fortfahren löscht die Zuweisung.";
     Settings_Hotkey_Restore = L"Standard-Tastenkombinationen wiederherstellen";
     Settings_Hotkey_Restored = L"Wiederhergestellt";
     Settings_Hotkey_MouseTip = L"Tipp: Unterstützt die mittlere Maustaste, Seitentasten und andere Multifunktionstasten. Ordnen Sie weitere Seitentasten im Maustreiber Tastaturtasten zu, um sie zu binden.";
@@ -6195,6 +6201,7 @@ void SetLanguage(Language lang) {
     Settings_Tab_Shortcuts = L"Atajos";
     Settings_Hotkey_PressKey = L"Presione teclas...";
     Settings_Hotkey_Conflict = L"Conflicto de teclas";
+    Settings_Hotkey_ConflictPrompt = L"Usado por \"%s\". Continuar borrará su asignación.";
     Settings_Hotkey_Restore = L"Restablecer atajos predeterminados";
     Settings_Hotkey_Restored = L"Restablecido";
     Settings_Hotkey_MouseTip = L"Consejo: Admite el botón central del mouse, los botones laterales y otros botones multifunción. Asigne botones laterales adicionales a teclas del teclado en el controlador del mouse para vincularlos.";
@@ -6206,6 +6213,7 @@ void SetLanguage(Language lang) {
     Settings_Tab_Shortcuts = L"Raccourcis";
     Settings_Hotkey_PressKey = L"Appuyez sur les touches...";
     Settings_Hotkey_Conflict = L"Conflit de raccourcis";
+    Settings_Hotkey_ConflictPrompt = L"Déjà utilisé par « %s ». Continuer effacera son raccourci.";
     Settings_Hotkey_Restore = L"Restaurer les raccourcis par défaut";
     Settings_Hotkey_Restored = L"Restauré";
     Settings_Hotkey_MouseTip = L"Conseil : Prend en charge le bouton central de la souris, les boutons latéraux et autres boutons multifonctions. Mappez les boutons latéraux supplémentaires sur les touches du clavier dans le pilote de votre souris pour les lier.";
@@ -6218,6 +6226,7 @@ void SetLanguage(Language lang) {
     Settings_Tab_Shortcuts = L"Shortcuts";
     Settings_Hotkey_PressKey = L"Press keys...";
     Settings_Hotkey_Conflict = L"Hotkey conflict";
+    Settings_Hotkey_ConflictPrompt = L"Already used by \"%s\". Continuing will clear its hotkey.";
     Settings_Hotkey_Restore = L"Restore Default Hotkeys";
     Settings_Hotkey_Restored = L"Restored";
     Settings_Hotkey_MouseTip = L"Tip: Supports middle mouse button, side buttons, and other multi-function mouse keys. Map additional buttons to keyboard keys in your mouse driver to bind them.";
