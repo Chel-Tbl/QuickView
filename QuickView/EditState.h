@@ -626,6 +626,9 @@ struct AppConfig {
     bool DisableEdgeNavInCompare = true;
     int NavIndicator = 0;               // 0=Arrow
     int GalleryTriggerMode = 1;         // 0=Hover Auto, 1=Hover Hotspot Delay, 2=Click Hotspot
+    float GalleryTriggerAreaHeight = 20.0f; // Auto hover trigger zone height in logical pixels (5 ~ 100)
+    float GalleryDwellTime = 0.18f;        // Dwell time for hotspot hover / expand hotspot in seconds (0.05 ~ 2.0)
+    float GalleryExitDelay = 0.80f;        // Exit dismissal delay in seconds (0.10 ~ 3.0)
     int GalleryThumbnailSize = 0;       // 0=Auto(140px), 80~300=explicit pixel size
     float GalleryFilmstripHeight = 140.0f; // Preferred height of filmstrip in logical pixels
     int PrefetchGear = 1;               // 0=Off, 1=Auto, 2=Eco, 3=Balanced, 4=Ultra

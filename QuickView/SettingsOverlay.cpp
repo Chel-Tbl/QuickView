@@ -1910,10 +1910,40 @@ void SettingsOverlay::BuildMenu() {
             AppStrings::Settings_Option_GalleryTriggerDisable
         };
         itemGalleryTrigger.tooltipText = AppStrings::Settings_Tooltip_GalleryTrigger;
-        itemGalleryTrigger.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) { SaveConfig(); };
+        itemGalleryTrigger.onChange = [](SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) { 
+            SaveConfig(); 
+            overlay->BuildMenu();
+        };
         tabControl.items.push_back(itemGalleryTrigger);
 
+        if (g_config.GalleryTriggerMode == 0) {
+            SettingsItem itemAreaHeight = { AppStrings::Settings_Label_GalleryTriggerAreaHeight, OptionType::Slider, nullptr, &g_config.GalleryTriggerAreaHeight };
+            itemAreaHeight.minVal = 5.0f;
+            itemAreaHeight.maxVal = 100.0f;
+            itemAreaHeight.step = 1.0f;
+            itemAreaHeight.displayFormat = L"%.0f px";
+            itemAreaHeight.isNewOption = true;
+            itemAreaHeight.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) { SaveConfig(); };
+            tabControl.items.push_back(itemAreaHeight);
+        } else if (g_config.GalleryTriggerMode == 1) {
+            SettingsItem itemDwell = { AppStrings::Settings_Label_GalleryDwellTime, OptionType::Slider, nullptr, &g_config.GalleryDwellTime };
+            itemDwell.minVal = 0.05f;
+            itemDwell.maxVal = 2.00f;
+            itemDwell.step = 0.01f;
+            itemDwell.displayFormat = L"%.2f s";
+            itemDwell.isNewOption = true;
+            itemDwell.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) { SaveConfig(); };
+            tabControl.items.push_back(itemDwell);
+        }
 
+        SettingsItem itemExitDelay = { AppStrings::Settings_Label_GalleryExitDelay, OptionType::Slider, nullptr, &g_config.GalleryExitDelay };
+        itemExitDelay.minVal = 0.10f;
+        itemExitDelay.maxVal = 3.00f;
+        itemExitDelay.step = 0.05f;
+        itemExitDelay.displayFormat = L"%.2f s";
+        itemExitDelay.isNewOption = true;
+        itemExitDelay.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) { SaveConfig(); };
+        tabControl.items.push_back(itemExitDelay);
     }
     m_tabs.push_back(tabControl);
 

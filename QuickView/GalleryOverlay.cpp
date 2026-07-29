@@ -253,7 +253,7 @@ void GalleryOverlay::Update(float deltaTime, HWND hwnd) {
     // 6. Hover Hotspot Delay Timer (Trigger Mode 1)
     if (g_config.GalleryTriggerMode == 1 && m_hoveringHotspot && m_mode == GalleryMode::Hidden) {
         m_hoverDelayTimer += deltaTime;
-        if (m_hoverDelayTimer >= 0.18f) { // 180ms delay
+        if (m_hoverDelayTimer >= g_config.GalleryDwellTime) { // Configurable dwell time
             Open(m_selectedIndex >= 0 ? m_selectedIndex : 0, GalleryMode::Filmstrip);
             m_hoverDelayTimer = 0.0f;
             m_hoveringHotspot = false;
@@ -269,7 +269,7 @@ void GalleryOverlay::Update(float deltaTime, HWND hwnd) {
     if ((g_config.GalleryTriggerMode == 0 || g_config.GalleryTriggerMode == 1) && 
         m_mode == GalleryMode::Filmstrip && m_bottomHintHover && m_gridProgress < 0.01f) {
         m_expandHoverTimer += deltaTime;
-        if (m_expandHoverTimer >= 0.50f) { // 500ms delay, giving user clear perception of pause/hover
+        if (m_expandHoverTimer >= g_config.GalleryDwellTime) { // Configurable dwell time for expand hotspot
             SetMode(GalleryMode::FullGrid);
             m_expandHoverTimer = 0.0f;
         }
@@ -278,7 +278,7 @@ void GalleryOverlay::Update(float deltaTime, HWND hwnd) {
         m_expandHoverTimer = 0.0f;
     }
     
-    // 7. Auto Dismissal Delay Timer (300ms) with global physical cursor polling & tolerance
+    // 7. Auto Dismissal Delay Timer with global physical cursor polling & tolerance
     if (m_mode != GalleryMode::Hidden) {
         float width = m_lastSize.width;
         float height = m_lastSize.height;
@@ -323,7 +323,7 @@ void GalleryOverlay::Update(float deltaTime, HWND hwnd) {
         extern bool g_isDraggingFilmstrip;
         if (!m_mouseInGallery && !m_isPinned && !g_isDraggingFilmstrip && !g_imagePath.empty() && m_mode != GalleryMode::FullGrid && m_targetGridProgress < 0.5f) {
             m_dismissalTimer += deltaTime;
-            if (m_dismissalTimer >= 0.8f) {
+            if (m_dismissalTimer >= g_config.GalleryExitDelay) {
                 Close(true);
                 m_dismissalTimer = 0.0f;
             }

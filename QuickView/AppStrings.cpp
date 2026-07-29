@@ -542,6 +542,9 @@ const wchar_t *Settings_Option_GalleryTriggerDelay = nullptr;
 const wchar_t *Settings_Option_GalleryTriggerClick = nullptr;
 const wchar_t *Settings_Option_GalleryTriggerDisable = nullptr;
 const wchar_t *Settings_Tooltip_GalleryTrigger = nullptr;
+const wchar_t *Settings_Label_GalleryTriggerAreaHeight = nullptr;
+const wchar_t *Settings_Label_GalleryDwellTime = nullptr;
+const wchar_t *Settings_Label_GalleryExitDelay = nullptr;
 
 const wchar_t *OSD_SlideshowStarted = nullptr;
 const wchar_t *OSD_SlideshowStopped = nullptr;
@@ -1086,6 +1089,9 @@ struct LanguageTable {
     const wchar_t *Settings_Option_GalleryTriggerClick;
     const wchar_t *Settings_Option_GalleryTriggerDisable;
     const wchar_t *Settings_Tooltip_GalleryTrigger;
+    const wchar_t *Settings_Label_GalleryTriggerAreaHeight;
+    const wchar_t *Settings_Label_GalleryDwellTime;
+    const wchar_t *Settings_Label_GalleryExitDelay;
 
     const wchar_t *OSD_SlideshowStarted;
     const wchar_t *OSD_SlideshowStopped;
@@ -1633,6 +1639,9 @@ static const LanguageTable Table_EN = {
     L"Click Hotspot", // Settings_Option_GalleryTriggerClick
     L"Disabled", // Settings_Option_GalleryTriggerDisable
     L"This feature is automatically disabled when the window is smaller than 600x450.", // Settings_Tooltip_GalleryTrigger
+    L"Trigger Area Height", // Settings_Label_GalleryTriggerAreaHeight
+    L"Dwell Time", // Settings_Label_GalleryDwellTime
+    L"Exit Delay", // Settings_Label_GalleryExitDelay
 
     L"Slideshow Started", // OSD_SlideshowStarted
     L"Slideshow Stopped", // OSD_SlideshowStopped
@@ -2180,6 +2189,9 @@ static const LanguageTable Table_CN = {
     L"点击热点", // Settings_Option_GalleryTriggerClick
     L"停用", // Settings_Option_GalleryTriggerDisable
     L"该功能在窗口小于 600x450 时将自动禁用。", // Settings_Tooltip_GalleryTrigger
+    L"触发区域高度", // Settings_Label_GalleryTriggerAreaHeight
+    L"停留时长", // Settings_Label_GalleryDwellTime
+    L"退出延迟", // Settings_Label_GalleryExitDelay
 
     L"开始播放幻灯片", // OSD_SlideshowStarted
     L"停止播放幻灯片", // OSD_SlideshowStopped
@@ -2727,6 +2739,9 @@ static const LanguageTable Table_TW = {
     L"點擊熱點", // Settings_Option_GalleryTriggerClick
     L"停用", // Settings_Option_GalleryTriggerDisable
     L"該功能在視窗小於 600x450 時將自動禁用。", // Settings_Tooltip_GalleryTrigger
+    L"觸發區域高度", // Settings_Label_GalleryTriggerAreaHeight
+    L"停留時長", // Settings_Label_GalleryDwellTime
+    L"退出延遲", // Settings_Label_GalleryExitDelay
 
     L"開始播放幻燈片", // OSD_SlideshowStarted
     L"停止播放幻燈片", // OSD_SlideshowStopped
@@ -3274,6 +3289,9 @@ static const LanguageTable Table_JA = {
     L"ホットスポットクリック", // Settings_Option_GalleryTriggerClick
     L"無効", // Settings_Option_GalleryTriggerDisable
     L"この機能はウィンドウサイズが 600x450 未満の場合、自動的に無効になります。", // Settings_Tooltip_GalleryTrigger
+    L"トリガーエリアの高さ", // Settings_Label_GalleryTriggerAreaHeight
+    L"ホバー滞在時間", // Settings_Label_GalleryDwellTime
+    L"退出ディレイ", // Settings_Label_GalleryExitDelay
 
     L"スライドショーを開始", // OSD_SlideshowStarted
     L"スライドショーを停止", // OSD_SlideshowStopped
@@ -3821,6 +3839,9 @@ static const LanguageTable Table_RU = {
     L"Щелчок по точке", // Settings_Option_GalleryTriggerClick
     L"Отключено", // Settings_Option_GalleryTriggerDisable
     L"Эта функция автоматически отключается, если размер окна меньше 600x450 пкс.", // Settings_Tooltip_GalleryTrigger
+    L"Высота зоны триггера", // Settings_Label_GalleryTriggerAreaHeight
+    L"Время задержки", // Settings_Label_GalleryDwellTime
+    L"Задержка выхода", // Settings_Label_GalleryExitDelay
 
     L"Слайд-шоу запущено", // OSD_SlideshowStarted
     L"Слайд-шоу остановлено", // OSD_SlideshowStopped
@@ -4368,6 +4389,9 @@ static const LanguageTable Table_DE = {
     L"Hotspot-Klick", // Settings_Option_GalleryTriggerClick
     L"Deaktiviert", // Settings_Option_GalleryTriggerDisable
     L"Diese Funktion wird automatisch deaktiviert, wenn das Fenster kleiner als 600x450 ist.", // Settings_Tooltip_GalleryTrigger
+    L"Höhe des Auslösebereichs", // Settings_Label_GalleryTriggerAreaHeight
+    L"Verweilzeit", // Settings_Label_GalleryDwellTime
+    L"Verzögerung beim Beenden", // Settings_Label_GalleryExitDelay
 
     L"Diashow gestartet", // OSD_SlideshowStarted
     L"Diashow gestoppt", // OSD_SlideshowStopped
@@ -4915,6 +4939,9 @@ static const LanguageTable Table_ES = {
     L"Clic en punto caliente", // Settings_Option_GalleryTriggerClick
     L"Deshabilitado", // Settings_Option_GalleryTriggerDisable
     L"Esta función se desactiva automáticamente cuando la ventana es menor de 600x450.", // Settings_Tooltip_GalleryTrigger
+    L"Altura del área de activación", // Settings_Label_GalleryTriggerAreaHeight
+    L"Tiempo de permanencia", // Settings_Label_GalleryDwellTime
+    L"Retardo de salida", // Settings_Label_GalleryExitDelay
 
     L"Presentación iniciada", // OSD_SlideshowStarted
     L"Presentación detenida", // OSD_SlideshowStopped
@@ -5462,6 +5489,9 @@ static const LanguageTable Table_FR = {
     L"Clic sur le point chaud", // Settings_Option_GalleryTriggerClick
     L"Désactivé", // Settings_Option_GalleryTriggerDisable
     L"Cette fonctionnalité est automatiquement désactivée lorsque la fenêtre est plus petite que 600x450.", // Settings_Tooltip_GalleryTrigger
+    L"Hauteur de la zone de déclenchement", // Settings_Label_GalleryTriggerAreaHeight
+    L"Temps de maintien", // Settings_Label_GalleryDwellTime
+    L"Délai de sortie", // Settings_Label_GalleryExitDelay
 
     L"Diaporama démarré", // OSD_SlideshowStarted
     L"Diaporama arrêté", // OSD_SlideshowStopped
@@ -6013,6 +6043,9 @@ void Apply(const LanguageTable& t) {
   Settings_Option_GalleryTriggerClick = t.Settings_Option_GalleryTriggerClick;
   Settings_Option_GalleryTriggerDisable = t.Settings_Option_GalleryTriggerDisable;
   Settings_Tooltip_GalleryTrigger = t.Settings_Tooltip_GalleryTrigger;
+  Settings_Label_GalleryTriggerAreaHeight = t.Settings_Label_GalleryTriggerAreaHeight;
+  Settings_Label_GalleryDwellTime = t.Settings_Label_GalleryDwellTime;
+  Settings_Label_GalleryExitDelay = t.Settings_Label_GalleryExitDelay;
 
   OSD_SlideshowStarted = t.OSD_SlideshowStarted;
   OSD_SlideshowStopped = t.OSD_SlideshowStopped;

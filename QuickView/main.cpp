@@ -4411,6 +4411,9 @@ void SaveConfig() {
     WriteConfigInt(L"Controls", L"MiddleClickAction", (int)g_config.MiddleClickAction, iniPath.c_str());
     WriteConfigBool(L"Controls", L"EdgeNavClick", g_config.EdgeNavClick, iniPath.c_str());
     WriteConfigInt(L"Controls", L"GalleryTriggerMode", g_config.GalleryTriggerMode, iniPath.c_str());
+    WriteConfigFloat(L"Controls", L"GalleryTriggerAreaHeight", g_config.GalleryTriggerAreaHeight, iniPath.c_str());
+    WriteConfigFloat(L"Controls", L"GalleryDwellTime", g_config.GalleryDwellTime, iniPath.c_str());
+    WriteConfigFloat(L"Controls", L"GalleryExitDelay", g_config.GalleryExitDelay, iniPath.c_str());
     WriteConfigInt(L"Controls", L"GalleryThumbnailSize", g_config.GalleryThumbnailSize, iniPath.c_str());
     WriteConfigInt(L"Controls", L"GalleryFilmstripHeight", g_config.GalleryFilmstripHeight, iniPath.c_str());
     // NavIndicator moved to View section
@@ -4729,6 +4732,12 @@ void LoadConfig() {
     g_config.MiddleClickIndex = (g_config.MiddleClickAction == MouseAction::ExitApp) ? 1 : 0;
     g_config.EdgeNavClick = GetPrivateProfileIntW(L"Controls", L"EdgeNavClick", 1, iniPath.c_str()) != 0;
     g_config.GalleryTriggerMode = GetPrivateProfileIntW(L"Controls", L"GalleryTriggerMode", 1, iniPath.c_str());
+    GetPrivateProfileStringW(L"Controls", L"GalleryTriggerAreaHeight", L"20.0", buf, 64, iniPath.c_str());
+    g_config.GalleryTriggerAreaHeight = std::clamp((float)_wtof(buf), 5.0f, 100.0f);
+    GetPrivateProfileStringW(L"Controls", L"GalleryDwellTime", L"0.18", buf, 64, iniPath.c_str());
+    g_config.GalleryDwellTime = std::clamp((float)_wtof(buf), 0.05f, 2.00f);
+    GetPrivateProfileStringW(L"Controls", L"GalleryExitDelay", L"0.80", buf, 64, iniPath.c_str());
+    g_config.GalleryExitDelay = std::clamp((float)_wtof(buf), 0.10f, 3.00f);
     g_config.GalleryThumbnailSize = std::clamp((int)GetPrivateProfileIntW(L"Controls", L"GalleryThumbnailSize", 0, iniPath.c_str()), 0, 300);
     GetPrivateProfileStringW(L"Controls", L"GalleryFilmstripHeight", L"-1.0", buf, 64, iniPath.c_str());
     {
@@ -8173,8 +8182,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
               
               bool inGalleryTriggerZone = false;
               if (g_config.GalleryTriggerMode == 0) {
-                  // Mode 0: Wide auto hover zone (400px wide, 20px high)
-                  inGalleryTriggerZone = (pt.y >= 0 && pt.y < 20.0f * g_uiScale && pt.x >= cx - 200.0f * g_uiScale && pt.x <= cx + 200.0f * g_uiScale);
+                  // Mode 0: Auto hover zone dynamically scaled across window width, avoiding top-right caption buttons
+                  float ctrlW = g_uiRenderer ? g_uiRenderer->GetWindowControlsWidth() : 120.0f * g_uiScale;
+                  if (ctrlW < 100.0f * g_uiScale) ctrlW = 120.0f * g_uiScale;
+                  float rightBound = (float)w - ctrlW - 6.0f * g_uiScale;
+                  float leftBound = 0.0f;
+                  float triggerH = g_config.GalleryTriggerAreaHeight * g_uiScale;
+                  inGalleryTriggerZone = (pt.y >= 0 && pt.y < triggerH && pt.x >= leftBound && pt.x <= rightBound);
               } else if (g_config.GalleryTriggerMode == 1) {
                   // Mode 1: Hotspot Hover. Trigger ONLY when mouse is near the center button (comfort area symmetry: 30px wide, 32px high)
                   float iconSize = 18.0f * g_uiScale;

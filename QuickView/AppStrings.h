@@ -254,6 +254,9 @@ namespace AppStrings {
     extern const wchar_t* Settings_Option_GalleryTriggerClick;
     extern const wchar_t* Settings_Option_GalleryTriggerDisable;
     extern const wchar_t* Settings_Tooltip_GalleryTrigger;
+    extern const wchar_t* Settings_Label_GalleryTriggerAreaHeight;
+    extern const wchar_t* Settings_Label_GalleryDwellTime;
+    extern const wchar_t* Settings_Label_GalleryExitDelay;
 
     
     extern const wchar_t* Settings_Group_Foundation;
