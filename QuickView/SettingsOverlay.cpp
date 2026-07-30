@@ -1547,6 +1547,12 @@ void SettingsOverlay::BuildMenu() {
 
     tabVisuals.items.push_back({ AppStrings::Settings_Label_AutoHideTitle, OptionType::Toggle, &g_config.AutoHideWindowControls });
     
+    SettingsItem itemShowOSD = { AppStrings::Settings_Label_ShowOSD, OptionType::Toggle, &g_config.ShowOSD };
+    itemShowOSD.onChange = []([[maybe_unused]] SettingsOverlay* overlay, [[maybe_unused]] SettingsItem* item) {
+        SaveConfig();
+    };
+    tabVisuals.items.push_back(itemShowOSD);
+    
     // Window Min Width Slider (200px to 800px)
     SettingsItem itemMinSize = { AppStrings::Settings_Label_WindowMinSize, OptionType::Slider, nullptr, &g_config.WindowMinSize };
     // UI controls width is roughly 38.0f * 4 * m_uiScale (which is 152 at 1.0 scale).

@@ -362,6 +362,7 @@ const wchar_t *Settings_Label_LeftDrag = nullptr;
 const wchar_t *Settings_Label_MiddleDrag = nullptr;
 const wchar_t *Settings_Label_MiddleClick = nullptr;
 const wchar_t *Settings_Label_EdgeNavClick = nullptr;
+const wchar_t *Settings_Label_ShowOSD = nullptr;
 const wchar_t *Settings_Label_DisableEdgeNavInCompare = nullptr;
 const wchar_t *Settings_Label_NavIndicator = nullptr;
 const wchar_t *Settings_Label_AutoRotate = nullptr;
@@ -911,6 +912,7 @@ struct LanguageTable {
     const wchar_t *Settings_Label_MiddleDrag;
     const wchar_t *Settings_Label_MiddleClick;
     const wchar_t *Settings_Label_EdgeNavClick;
+    const wchar_t *Settings_Label_ShowOSD;
     const wchar_t *Settings_Label_DisableEdgeNavInCompare;
     const wchar_t *Settings_Label_NavIndicator;
     const wchar_t *Settings_Label_AutoRotate;
@@ -1463,6 +1465,7 @@ static const LanguageTable Table_EN = {
     L"Middle Drag", // Settings_Label_MiddleDrag
     L"Middle Click", // Settings_Label_MiddleClick
     L"Edge Nav Click", // Settings_Label_EdgeNavClick
+    L"Show OSD Notification", // Settings_Label_ShowOSD
     L"Disable in Compare Mode", // Settings_Label_DisableEdgeNavInCompare
     L"Nav Indicator", // Settings_Label_NavIndicator
     L"Auto Rotate (EXIF)", // Settings_Label_AutoRotate
@@ -2015,6 +2018,7 @@ static const LanguageTable Table_CN = {
     L"中键拖动", // Settings_Label_MiddleDrag
     L"中键点击", // Settings_Label_MiddleClick
     L"边缘点击翻页", // Settings_Label_EdgeNavClick
+    L"显示 OSD 提示", // Settings_Label_ShowOSD
     L"在对比模式下禁用", // Settings_Label_DisableEdgeNavInCompare
     L"翻页指示器", // Settings_Label_NavIndicator
     L"自动旋转 (EXIF)", // Settings_Label_AutoRotate
@@ -2567,6 +2571,7 @@ static const LanguageTable Table_TW = {
     L"中鍵拖曳", // Settings_Label_MiddleDrag
     L"中鍵點選", // Settings_Label_MiddleClick
     L"邊緣點選翻頁", // Settings_Label_EdgeNavClick
+    L"顯示 OSD 提示", // Settings_Label_ShowOSD
     L"在對比模式下停用", // Settings_Label_DisableEdgeNavInCompare
     L"翻頁指示器", // Settings_Label_NavIndicator
     L"自動旋轉 (EXIF)", // Settings_Label_AutoRotate
@@ -3119,6 +3124,7 @@ static const LanguageTable Table_JA = {
     L"中ドラッグ", // Settings_Label_MiddleDrag
     L"中クリック", // Settings_Label_MiddleClick
     L"エッジナビゲーションクリック", // Settings_Label_EdgeNavClick
+    L"OSD通知を表示", // Settings_Label_ShowOSD
     L"比較モードでは無効化", // Settings_Label_DisableEdgeNavInCompare
     L"ナビゲーションインジケーター", // Settings_Label_NavIndicator
     L"自動回転 (EXIF)", // Settings_Label_AutoRotate
@@ -3671,6 +3677,7 @@ static const LanguageTable Table_RU = {
     L"Перетаскивание средней кнопкой", // Settings_Label_MiddleDrag
     L"Щелчок средней кнопкой", // Settings_Label_MiddleClick
     L"Навигация при щелчке по краям", // Settings_Label_EdgeNavClick
+    L"Показывать OSD", // Settings_Label_ShowOSD
     L"Отключить в режиме сравнения", // Settings_Label_DisableEdgeNavInCompare
     L"Индикатор навигации", // Settings_Label_NavIndicator
     L"Автоповорот (EXIF)", // Settings_Label_AutoRotate
@@ -4223,6 +4230,7 @@ static const LanguageTable Table_DE = {
     L"Mitte ziehen", // Settings_Label_MiddleDrag
     L"Mittelklick", // Settings_Label_MiddleClick
     L"Randnavigation-Klick", // Settings_Label_EdgeNavClick
+    L"OSD-Benachrichtigung anzeigen", // Settings_Label_ShowOSD
     L"Im Vergleichsmodus deaktivieren", // Settings_Label_DisableEdgeNavInCompare
     L"Navigationsanzeige", // Settings_Label_NavIndicator
     L"Automatisch drehen (EXIF)", // Settings_Label_AutoRotate
@@ -4775,6 +4783,7 @@ static const LanguageTable Table_ES = {
     L"Arrastrar central", // Settings_Label_MiddleDrag
     L"Clic central", // Settings_Label_MiddleClick
     L"Clic navegación borde", // Settings_Label_EdgeNavClick
+    L"Mostrar notificación OSD", // Settings_Label_ShowOSD
     L"Desactivar en modo de comparación", // Settings_Label_DisableEdgeNavInCompare
     L"Indicador navegación", // Settings_Label_NavIndicator
     L"Rotar automático (EXIF)", // Settings_Label_AutoRotate
@@ -5327,6 +5336,7 @@ static const LanguageTable Table_FR = {
     L"Middle Drag", // Settings_Label_MiddleDrag
     L"Middle Click", // Settings_Label_MiddleClick
     L"Clic de navigation sur les bords", // Settings_Label_EdgeNavClick
+    L"Afficher la notification OSD", // Settings_Label_ShowOSD
     L"Désactiver en mode comparaison", // Settings_Label_DisableEdgeNavInCompare
     L"Indicateur de navigation", // Settings_Label_NavIndicator
     L"Rotation automatique (EXIF)", // Settings_Label_AutoRotate
@@ -5883,6 +5893,7 @@ void Apply(const LanguageTable& t) {
   Settings_Label_MiddleDrag = t.Settings_Label_MiddleDrag;
   Settings_Label_MiddleClick = t.Settings_Label_MiddleClick;
   Settings_Label_EdgeNavClick = t.Settings_Label_EdgeNavClick;
+  Settings_Label_ShowOSD = t.Settings_Label_ShowOSD;
   Settings_Label_DisableEdgeNavInCompare = t.Settings_Label_DisableEdgeNavInCompare;
   Settings_Label_NavIndicator = t.Settings_Label_NavIndicator;
   Settings_Label_AutoRotate = t.Settings_Label_AutoRotate;
@@ -6496,6 +6507,9 @@ std::wstring GetHotkeyActionName(HotkeyAction action) {
         break;
     case HotkeyAction::CopyPath:
         raw = AppStrings::Context_CopyPath;
+        break;
+    case HotkeyAction::ShowInExplorer:
+        raw = AppStrings::Context_ShowInExplorer;
         break;
     case HotkeyAction::ToggleCompare:
         raw = AppStrings::Context_CompareMode;

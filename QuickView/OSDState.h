@@ -4,6 +4,9 @@
 #include <d2d1helper.h>
 #include "ImageTypes.h"
 
+#include "EditState.h"
+extern AppConfig g_config;
+
 extern void RequestRepaint(QuickView::PaintLayer layer);
 
 enum class OSDPosition { Bottom, Top, TopRight };
@@ -21,6 +24,7 @@ struct OSDState {
     OSDPosition Position = OSDPosition::Bottom;
 
     void Show(HWND hwnd, const std::wstring& msg, bool error = false, bool warning = false, D2D1_COLOR_F color = D2D1::ColorF(D2D1::ColorF::White), OSDPosition pos = OSDPosition::Bottom, DWORD durationMs = 1000) {
+        if (!g_config.ShowOSD) return;
         Message = msg;
         IsCompareOSD = false;
         StartTime = GetTickCount();
@@ -36,6 +40,7 @@ struct OSDState {
     }
 
     void ShowCompare(HWND hwnd, const std::wstring& left, const std::wstring& right, D2D1_COLOR_F color = D2D1::ColorF(D2D1::ColorF::White), DWORD durationMs = 1000) {
+        if (!g_config.ShowOSD) return;
         MessageLeft = left;
         MessageRight = right;
         Message = L"COMPARE"; // Dummy to trigger visibility

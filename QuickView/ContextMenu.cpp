@@ -27,6 +27,15 @@ void ShowContextMenu(HWND hwnd, POINT pt, bool hasImage, bool needsExtensionFix,
         return menuStrings.back()->c_str();
     };
 
+    auto getHK = [&](HotkeyAction action) -> const wchar_t* {
+        size_t idx = static_cast<size_t>(action);
+        if (idx >= g_hotkeys.size()) return nullptr;
+        std::wstring s = KeyComboToString(g_hotkeys[idx].combo);
+        if (s.empty() || s == L"None") return nullptr;
+        menuStrings.push_back(std::make_unique<std::wstring>(std::move(s)));
+        return menuStrings.back()->c_str();
+    };
+
     // ========================================================
     // Top Action Row (4 buttons)
     // ========================================================
@@ -44,11 +53,11 @@ void ShowContextMenu(HWND hwnd, POINT pt, bool hasImage, bool needsExtensionFix,
 
     // --- Open & Copy Group ---
     items.push_back(MI::Normal(IDM_OPENWITH_DEFAULT, AppStrings::Context_OpenWith, GeekIcons::OpenWith).Enabled(hasImage));
-    items.push_back(MI::Normal(IDM_COPY_IMAGE, AppStrings::Context_CopyImage, GeekIcons::Copy, L"Ctrl+C"));
-    items.push_back(MI::Normal(IDM_SHOW_IN_EXPLORER, AppStrings::Context_ShowInExplorer, GeekIcons::Explorer));
+    items.push_back(MI::Normal(IDM_COPY_IMAGE, AppStrings::Context_CopyImage, GeekIcons::Copy, getHK(HotkeyAction::CopyImage)));
+    items.push_back(MI::Normal(IDM_SHOW_IN_EXPLORER, AppStrings::Context_ShowInExplorer, GeekIcons::Explorer, getHK(HotkeyAction::ShowInExplorer)));
     items.push_back(MI::Normal(IDM_OPEN_FOLDER, AppStrings::Context_OpenFolder, GeekIcons::Folder));
-    items.push_back(MI::Normal(IDM_COPY_PATH, AppStrings::Context_CopyPath, GeekIcons::Link, L"Ctrl+Shift+C"));
-    items.push_back(MI::Normal(IDM_PRINT, AppStrings::Context_Print, GeekIcons::Print, L"Ctrl+P"));
+    items.push_back(MI::Normal(IDM_COPY_PATH, AppStrings::Context_CopyPath, GeekIcons::Link, getHK(HotkeyAction::CopyPath)));
+    items.push_back(MI::Normal(IDM_PRINT, AppStrings::Context_Print, GeekIcons::Print, getHK(HotkeyAction::Print)));
     
     extern UndoManager g_undoManager;
     if (g_undoManager.CanUndo()) {
@@ -56,48 +65,48 @@ void ShowContextMenu(HWND hwnd, POINT pt, bool hasImage, bool needsExtensionFix,
         UndoType lastType = g_undoManager.GetLastActionType();
         if (lastType == UndoType::Rename) undoStr = AppStrings::Context_UndoRename;
         else if (lastType == UndoType::Transform) undoStr = AppStrings::Context_UndoTransform;
-        items.push_back(MI::Normal(IDM_UNDO, undoStr, nullptr, L"Ctrl+Z"));
+        items.push_back(MI::Normal(IDM_UNDO, undoStr, nullptr, getHK(HotkeyAction::Undo)));
     }
     
     items.push_back(MI::Sep());
 
     // --- Transform Submenu ---
     items.push_back(MI::Sub(AppStrings::Context_Transform, GeekIcons::Transform, {
-        MI::Normal(IDM_ROTATE_CW, AppStrings::Context_RotateCW),
-        MI::Normal(IDM_ROTATE_CCW, AppStrings::Context_RotateCCW),
-        MI::Normal(IDM_FLIP_H, AppStrings::Context_FlipH),
-        MI::Normal(IDM_FLIP_V, AppStrings::Context_FlipV),
+        MI::Normal(IDM_ROTATE_CW, AppStrings::Context_RotateCW, nullptr, getHK(HotkeyAction::RotateCW)),
+        MI::Normal(IDM_ROTATE_CCW, AppStrings::Context_RotateCCW, nullptr, getHK(HotkeyAction::RotateCCW)),
+        MI::Normal(IDM_FLIP_H, AppStrings::Context_FlipH, nullptr, getHK(HotkeyAction::FlipH)),
+        MI::Normal(IDM_FLIP_V, AppStrings::Context_FlipV, nullptr, getHK(HotkeyAction::FlipV)),
     }).Enabled(hasImage));
 
     // --- View Submenu ---
     {
         std::vector<MI> viewItems;
-        viewItems.push_back(MI::Check(IDM_COMPARE_MODE, AppStrings::Context_CompareMode, isCompareMode, GeekIcons::Compare));
+        viewItems.push_back(MI::Check(IDM_COMPARE_MODE, AppStrings::Context_CompareMode, isCompareMode, GeekIcons::Compare, getHK(HotkeyAction::ToggleCompare)));
         bool isOverlay = (g_runtime.OverlayModeState != OverlayState::Normal);
-        viewItems.push_back(MI::Check(IDM_OVERLAY_MODE, AppStrings::Context_OverlayMode, isOverlay, GeekIcons::Eye));
+        viewItems.push_back(MI::Check(IDM_OVERLAY_MODE, AppStrings::Context_OverlayMode, isOverlay, GeekIcons::Eye, getHK(HotkeyAction::ToggleOverlay)));
         viewItems.push_back(MI::Sep());
-        viewItems.push_back(MI::Normal(IDM_ZOOM_100, AppStrings::Context_ActualSize));
-        viewItems.push_back(MI::Normal(IDM_ZOOM_FIT, AppStrings::Context_FitToScreen));
-        viewItems.push_back(MI::Normal(IDM_ZOOM_FIT_WINDOW, AppStrings::Context_FitWindow));
-        viewItems.push_back(MI::Normal(IDM_ZOOM_FILL, AppStrings::Context_FillWindow));
-        viewItems.push_back(MI::Normal(IDM_ZOOM_IN, AppStrings::Context_ZoomIn));
-        viewItems.push_back(MI::Normal(IDM_ZOOM_OUT, AppStrings::Context_ZoomOut));
+        viewItems.push_back(MI::Normal(IDM_ZOOM_100, AppStrings::Context_ActualSize, nullptr, getHK(HotkeyAction::Zoom100)));
+        viewItems.push_back(MI::Normal(IDM_ZOOM_FIT, AppStrings::Context_FitToScreen, nullptr, getHK(HotkeyAction::ZoomFit)));
+        viewItems.push_back(MI::Normal(IDM_ZOOM_FIT_WINDOW, AppStrings::Context_FitWindow, nullptr, getHK(HotkeyAction::ZoomFitWindow)));
+        viewItems.push_back(MI::Normal(IDM_ZOOM_FILL, AppStrings::Context_FillWindow, nullptr, getHK(HotkeyAction::ZoomFill)));
+        viewItems.push_back(MI::Normal(IDM_ZOOM_IN, AppStrings::Context_ZoomIn, nullptr, getHK(HotkeyAction::ZoomIn)));
+        viewItems.push_back(MI::Normal(IDM_ZOOM_OUT, AppStrings::Context_ZoomOut, nullptr, getHK(HotkeyAction::ZoomOut)));
         viewItems.push_back(MI::Sep());
         viewItems.push_back(MI::Check(IDM_LOCK_WINDOW_SIZE, AppStrings::Context_LockWindow, isWindowLocked));
-        viewItems.push_back(MI::Check(IDM_ALWAYS_ON_TOP, AppStrings::Context_AlwaysOnTop, alwaysOnTop));
+        viewItems.push_back(MI::Check(IDM_ALWAYS_ON_TOP, AppStrings::Context_AlwaysOnTop, alwaysOnTop, nullptr, getHK(HotkeyAction::AlwaysOnTop)));
         viewItems.push_back(MI::Sep());
-        viewItems.push_back(MI::Normal(IDM_HUD_GALLERY, AppStrings::Context_HUDGallery));
+        viewItems.push_back(MI::Normal(IDM_HUD_GALLERY, AppStrings::Context_HUDGallery, nullptr, getHK(HotkeyAction::ToggleGallery)));
 
         UINT liteFlags = (showInfoPanel && !infoPanelExpanded) ? true : false;
         UINT fullFlags = (showInfoPanel && infoPanelExpanded) ? true : false;
-        viewItems.push_back(MI::Check(IDM_LITE_INFO, AppStrings::Context_LiteInfoPanel, liteFlags));
-        viewItems.push_back(MI::Check(IDM_FULL_INFO, AppStrings::Context_FullInfoPanel, fullFlags));
+        viewItems.push_back(MI::Check(IDM_LITE_INFO, AppStrings::Context_LiteInfoPanel, liteFlags, nullptr, getHK(HotkeyAction::ToggleInfoPanel)));
+        viewItems.push_back(MI::Check(IDM_FULL_INFO, AppStrings::Context_FullInfoPanel, fullFlags, nullptr, getHK(HotkeyAction::ToggleExifPanel)));
         viewItems.push_back(MI::Sep());
-        viewItems.push_back(MI::Check(IDM_RENDER_RAW, AppStrings::Context_RenderRAW, renderRaw).Enabled(isRawFile));
+        viewItems.push_back(MI::Check(IDM_RENDER_RAW, AppStrings::Context_RenderRAW, renderRaw, nullptr, getHK(HotkeyAction::RenderRaw)).Enabled(isRawFile));
         viewItems.push_back(MI::Check(IDM_PIXEL_ART_MODE, AppStrings::Context_PixelArtMode, isPixelArtMode));
-        viewItems.push_back(MI::Check(IDM_FULLSCREEN, AppStrings::Context_Fullscreen, isFullscreen));
-        viewItems.push_back(MI::Check(IDM_SLIDESHOW, AppStrings::Context_SlideshowMode, g_slideshowState.IsActive, nullptr, L"F10"));
-        viewItems.push_back(MI::Check(IDM_TOGGLE_SPAN, AppStrings::Context_SpanDisplays, isCrossMonitor));
+        viewItems.push_back(MI::Check(IDM_FULLSCREEN, AppStrings::Context_Fullscreen, isFullscreen, nullptr, getHK(HotkeyAction::ToggleFullscreen)));
+        viewItems.push_back(MI::Check(IDM_SLIDESHOW, AppStrings::Context_SlideshowMode, g_slideshowState.IsActive, nullptr, getHK(HotkeyAction::ToggleSlideshow)));
+        viewItems.push_back(MI::Check(IDM_TOGGLE_SPAN, AppStrings::Context_SpanDisplays, isCrossMonitor, nullptr, getHK(HotkeyAction::ToggleSpan)));
 
         items.push_back(MI::Sub(AppStrings::Context_View, GeekIcons::Eye, std::move(viewItems)));
     }

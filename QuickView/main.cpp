@@ -334,6 +334,7 @@ std::array<HotkeyBinding, static_cast<size_t>(HotkeyAction::Count)> g_hotkeys = 
     HotkeyBinding{ HotkeyAction::DeleteFile, KeyCombo{ VK_DELETE, 0 }, KeyCombo{ VK_DELETE, 0 } },
     HotkeyBinding{ HotkeyAction::CopyImage, KeyCombo{ 'C', 1 }, KeyCombo{ 'C', 1 } }, // Ctrl + C
     HotkeyBinding{ HotkeyAction::CopyPath, KeyCombo{ 'C', 5 }, KeyCombo{ 'C', 5 } },  // Ctrl + Alt + C (1 | 4 = 5)
+    HotkeyBinding{ HotkeyAction::ShowInExplorer, KeyCombo{ VK_RETURN, 1 }, KeyCombo{ VK_RETURN, 1 } }, // Ctrl + Enter
     HotkeyBinding{ HotkeyAction::ToggleCompare, KeyCombo{ 'C', 0 }, KeyCombo{ 'C', 0 } },
     HotkeyBinding{ HotkeyAction::ComparePair, KeyCombo{ 'C', 2 }, KeyCombo{ 'C', 2 } }, // Shift + C: rendered vs RAW
     HotkeyBinding{ HotkeyAction::AlwaysOnTop, KeyCombo{ 'T', 1 }, KeyCombo{ 'T', 1 } }, // Ctrl + T
@@ -4370,6 +4371,7 @@ void SaveConfig() {
     WriteConfigInt(L"View", L"OpenFullScreenMode", g_config.OpenFullScreenMode, iniPath.c_str());
     WriteConfigInt(L"View", L"FullScreenZoomMode", g_config.FullScreenZoomMode, iniPath.c_str());
     WriteConfigBool(L"View", L"LockWindowSize", g_config.LockWindowSize, iniPath.c_str());
+    WriteConfigBool(L"View", L"ShowOSD", g_config.ShowOSD, iniPath.c_str());
     WriteConfigBool(L"View", L"AutoHideWindowControls", g_config.AutoHideWindowControls, iniPath.c_str());
     WriteConfigBool(L"View", L"LockBottomToolbar", g_config.LockBottomToolbar, iniPath.c_str());
     WriteConfigInt(L"View", L"ShowBorderIndicator", g_config.ShowBorderIndicator, iniPath.c_str());
@@ -4658,6 +4660,7 @@ void LoadConfig() {
     g_config.OpenFullScreenMode = GetPrivateProfileIntW(L"View", L"OpenFullScreenMode", 0, iniPath.c_str());
     g_config.FullScreenZoomMode = GetPrivateProfileIntW(L"View", L"FullScreenZoomMode", 0, iniPath.c_str());
     g_config.LockWindowSize = GetPrivateProfileIntW(L"View", L"LockWindowSize", 0, iniPath.c_str()) != 0;
+    g_config.ShowOSD = GetPrivateProfileIntW(L"View", L"ShowOSD", 1, iniPath.c_str()) != 0;
 
     // Migration: if they had ResizeWindowOnZoom = 0, that's equivalent to LockWindowSize = true in old configs
     if (GetPrivateProfileIntW(L"View", L"ResizeWindowOnZoom", 1, iniPath.c_str()) == 0) {
@@ -15061,6 +15064,11 @@ bool HandleHotkeyAction(HWND hwnd, HotkeyAction action) {
     case HotkeyAction::CopyPath:
         if (IsCompareModeActive()) AppContext::GetInstance().Compare.contextPane = AppContext::GetInstance().Compare.activePane;
         SendMessage(hwnd, WM_COMMAND, IDM_COPY_PATH, 0);
+        return true;
+
+    case HotkeyAction::ShowInExplorer:
+        if (IsCompareModeActive()) AppContext::GetInstance().Compare.contextPane = AppContext::GetInstance().Compare.activePane;
+        SendMessage(hwnd, WM_COMMAND, IDM_SHOW_IN_EXPLORER, 0);
         return true;
 
     case HotkeyAction::ToggleCompare:

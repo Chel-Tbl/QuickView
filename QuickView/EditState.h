@@ -153,6 +153,7 @@ enum class HotkeyAction : uint8_t {
     DeleteFile,        // Delete File Dialog
     CopyImage,         // Copy Image to Clipboard
     CopyPath,          // Copy Path to Clipboard
+    ShowInExplorer,    // Show in File Explorer
     ToggleCompare,     // Toggle Compare Mode
     ComparePair,       // Compare a pair: rendered vs RAW side by side
     AlwaysOnTop,       // Toggle Always on Top
@@ -211,6 +212,7 @@ inline std::wstring_view HotkeyActionToString(HotkeyAction action) noexcept {
         case HotkeyAction::DeleteFile: return L"DeleteFile";
         case HotkeyAction::CopyImage: return L"CopyImage";
         case HotkeyAction::CopyPath: return L"CopyPath";
+        case HotkeyAction::ShowInExplorer: return L"ShowInExplorer";
         case HotkeyAction::ToggleCompare: return L"ToggleCompare";
         case HotkeyAction::ComparePair: return L"ComparePair";
         case HotkeyAction::AlwaysOnTop: return L"AlwaysOnTop";
@@ -267,6 +269,7 @@ inline HotkeyAction StringToHotkeyAction(std::wstring_view sv) noexcept {
     if (sv == L"DeleteFile") return HotkeyAction::DeleteFile;
     if (sv == L"CopyImage") return HotkeyAction::CopyImage;
     if (sv == L"CopyPath") return HotkeyAction::CopyPath;
+    if (sv == L"ShowInExplorer") return HotkeyAction::ShowInExplorer;
     if (sv == L"ToggleCompare") return HotkeyAction::ToggleCompare;
     if (sv == L"ComparePair") return HotkeyAction::ComparePair;
     if (sv == L"AlwaysOnTop") return HotkeyAction::AlwaysOnTop;
@@ -558,6 +561,7 @@ struct AppConfig {
     bool AlwaysOnTop = false;
     int OpenFullScreenMode = 0;         // 0=Off, 1=Large Only, 2=All
     bool LockWindowSize = false;
+    bool ShowOSD = true;
     bool AutoHideWindowControls = true;
     bool LockBottomToolbar = false;
     bool EnableCrossMonitor = false; // [Phase 2] Cross-Monitor Spanning

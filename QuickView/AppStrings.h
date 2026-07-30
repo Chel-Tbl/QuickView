@@ -406,6 +406,7 @@ namespace AppStrings {
     extern const wchar_t* Settings_Label_MiddleDrag;
     extern const wchar_t* Settings_Label_MiddleClick;
     extern const wchar_t* Settings_Label_EdgeNavClick;
+    extern const wchar_t* Settings_Label_ShowOSD;
     extern const wchar_t* Settings_Label_DisableEdgeNavInCompare;
     extern const wchar_t* Settings_Label_NavIndicator;
     
