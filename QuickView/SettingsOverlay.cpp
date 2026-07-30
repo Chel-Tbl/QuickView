@@ -2963,7 +2963,8 @@ void SettingsOverlay::Render(ID2D1DeviceContext* pRT, float winW, float winH) {
                  m_settingsContentHeight = contentY - startContentY;
             }
 
-            // Calculate Rect for Hit Testing
+            // Calculate Rect for Hit Testing & Layout Anchor
+            item.rect = D2D1::RectF(contentX, contentY, contentX + contentW, contentY + rowHeight);
             item.interactRect = {};
             item.interactRect2 = {};
 
