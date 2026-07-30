@@ -688,21 +688,7 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
             cellRect.bottom += expandH;
         }
         
-        // Specular Floating Drop Shadow for Hovered Thumbnail to build 3D visual depth
-        if (i == m_hoverIndex) {
-            D2D1_COLOR_F shadowColor = isLight ? D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.12f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.45f);
-            shadowColor.a *= m_transitionProgress;
-            m_brushOverlay->SetColor(shadowColor);
-            float shadowOffset = 3.0f * scale;
-            D2D1_RECT_F shadowRect = D2D1::RectF(
-                cellRect.left - shadowOffset * 0.5f,
-                cellRect.top + shadowOffset * 0.5f,
-                cellRect.right + shadowOffset * 0.5f,
-                cellRect.bottom + shadowOffset * 1.5f
-            );
-            pDC->FillRoundedRectangle(D2D1::RoundedRect(shadowRect, 7.0f * scale, 7.0f * scale), m_brushOverlay.Get());
-        }
-        
+
         // Selection border (rounded, DodgerBlue/Accent, single crisp ring)
         if (i == m_selectedIndex) {
             float borderOffset = 1.5f * scale;

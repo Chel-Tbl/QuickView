@@ -1296,6 +1296,7 @@ struct SavedWindowState {
     bool isValid = false;       // True if state was saved
 };
 static SavedWindowState g_savedState;
+DWORD g_lastOverlayCloseTime = 0;
 
 // Forward declarations for helper functions
 static void SaveOverlayWindowState(HWND hwnd);
@@ -5159,7 +5160,6 @@ void AdjustWindowForOverlay(HWND hwnd, bool isClosed) {
     float imgH = GetLogicalImageSize().height;
     bool hasImage = (imgW > 0 && imgH > 0);
 
-    // Pre-calculate zoom state only when an image is loaded
     float absoluteZoom = 1.0f;
     float curBaseFit = 1.0f;
     if (hasImage) {
@@ -5171,44 +5171,53 @@ void AdjustWindowForOverlay(HWND hwnd, bool isClosed) {
     }
 
     if (!isClosed) {
-        // [Fix] Automatically save current state before expanding for any overlay.
-        // This is crucial for dialogs and other components that call this function
-        // directly without calling SaveOverlayWindowState externally.
-        if (!g_savedState.isValid) {
-            SaveOverlayWindowState(hwnd);
-        }
-
-        // Opening overlay: expand window if too small for the overlay's minimum size.
+        // Opening overlay: expand window ONLY IF too small for the overlay's minimum size.
         if (currentW < minW || currentH < minH) {
             targetW = std::max(currentW, minW);
             targetH = std::max(currentH, minH);
         } else {
-            return; // Already large enough
+            return; // Already large enough, no window expansion needed
         }
     } else {
-        // If another overlay or dialog is still visible, do NOT restore window state yet!
+        // Closing overlay:
         if (g_settingsOverlay.IsVisible() || g_helpOverlay.IsVisible() || g_gallery.IsVisible() || AppContext::GetInstance().Dialog.IsVisible) {
             return;
         }
 
-        // Closing overlay: Restore the exact previous window state (position, size, zoom).
-        // This bypasses any auto-fitting logic (like the 80% screen limit) to preserve
-        // the user's manual layout and zoom levels.
-        if (g_savedState.isValid) {
-            RestoreOverlayWindowState(hwnd);
-            return;
-        } else {
-            // Fallback if somehow no state was saved: attempt to fit image normally
-            if (GetPaneContext(PaneSlot::Primary).resource) AdjustWindowToImage(hwnd);
-            return;
+        // Do not shrink if window size is locked by user setting
+        if (g_runtime.LockWindowSize) return;
+
+        if (!hasImage) return;
+
+        // Stateless Gap Detection: calculate rendered image bounds in current window
+        float renderedW = imgW * curBaseFit * GetPaneContext(PaneSlot::Primary).view.Zoom;
+        float renderedH = imgH * curBaseFit * GetPaneContext(PaneSlot::Primary).view.Zoom;
+
+        // Check if there is blank gap around image inside current Client area
+        bool hasHorizontalGap = (curClientW > renderedW + 1.0f);
+        bool hasVerticalGap   = (curClientH > renderedH + 1.0f);
+
+        if (!hasHorizontalGap && !hasVerticalGap) {
+            return; // Image fills or exceeds window client area -- no gap, keep window as-is!
         }
+
+        // Blank gap exists: shrink window client size to eliminate padding
+        float targetClientW = std::min(curClientW, std::max(100.0f, renderedW));
+        float targetClientH = std::min(curClientH, std::max(100.0f, renderedH));
+
+        targetW = (int)std::round(targetClientW) + borderW;
+        targetH = (int)std::round(targetClientH) + borderH;
     }
+
+    // Clamp target window size to minimum window bounds FIRST so center calculation aligns with Win32 MinTrackSize
+    targetW = std::max(targetW, minW);
+    targetH = std::max(targetH, minH);
 
     if (targetW == currentW && targetH == currentH) {
         return;
     }
 
-    // Center-anchored window positioning (unified for all cases)
+    // Center-anchored window positioning
     g_programmaticResize = true;
 
     int cx = rcWin.left + currentW / 2;
@@ -5229,22 +5238,18 @@ void AdjustWindowForOverlay(HWND hwnd, bool isClosed) {
     SetWindowPos(hwnd, nullptr, newX, newY, targetW, targetH,
                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
 
-    // Recalculate zoom only when opening an overlay to keep image pixels constant.
-    // When closing, we either restored the original zoom from g_savedState 
-    // or called AdjustWindowToImage which handles its own scaling.
+    // Maintain constant physical display size of image during expansion and shrinking
     if (hasImage) {
         float finalClientW = (float)(targetW - borderW);
         float finalClientH = (float)(targetH - borderH);
 
-        if (!isClosed) {
-            float newBaseFit = std::min(finalClientW / imgW, finalClientH / imgH);
-            if (imgW < 200.0f && imgH < 200.0f) {
-                if (newBaseFit > 1.0f) newBaseFit = 1.0f;
-            }
+        float newBaseFit = std::min(finalClientW / imgW, finalClientH / imgH);
+        if (imgW < 200.0f && imgH < 200.0f) {
+            if (newBaseFit > 1.0f) newBaseFit = 1.0f;
+        }
 
-            if (newBaseFit > 0.0001f) {
-                GetPaneContext(PaneSlot::Primary).view.Zoom = absoluteZoom / newBaseFit;
-            }
+        if (newBaseFit > 0.0001f) {
+            GetPaneContext(PaneSlot::Primary).view.Zoom = absoluteZoom / newBaseFit;
         }
 
         SyncDCompState(hwnd, finalClientW, finalClientH);
@@ -6953,10 +6958,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
         }
     }
 
-    if (AppContext::GetInstance().DialogCtrl && AppContext::GetInstance().DialogCtrl->IsActive()) {
+    if (AppContext::GetInstance().DialogCtrl && (AppContext::GetInstance().DialogCtrl->IsActive() || AppContext::GetInstance().Dialog.IsVisible)) {
         auto result = AppContext::GetInstance().DialogCtrl->HandleMessage(hwnd, message, wParam, lParam);
         if (result.has_value()) {
             return result.value();
+        }
+        if (message == WM_LBUTTONDOWN || message == WM_LBUTTONUP || message == WM_RBUTTONDOWN || message == WM_RBUTTONUP ||
+            message == WM_MBUTTONDOWN || message == WM_MBUTTONUP || message == WM_MOUSEMOVE || message == WM_MOUSEWHEEL ||
+            message == WM_LBUTTONDBLCLK || message == WM_RBUTTONDBLCLK) {
+            return 0; // Consume all mouse interactions completely while Dialog is active to block passthrough
         }
     }
 
@@ -8132,7 +8142,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
           if (GetPaneContext(PaneSlot::Primary).view.IsDragging) {
               g_currentCursor = LoadCursor(nullptr, IDC_SIZEALL);
-          } else if (g_config.EdgeNavClick && (!g_gallery.IsVisible() || (g_gallery.GetMode() != GalleryMode::FullGrid && !hasGallery)) && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && !AppContext::GetInstance().Dialog.IsVisible) {
+          } else if (!g_imagePath.empty() && g_config.EdgeNavClick && (!g_gallery.IsVisible() || (g_gallery.GetMode() != GalleryMode::FullGrid && !hasGallery)) && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && !AppContext::GetInstance().Dialog.IsVisible) {
               bool hoverEdge = false;
               if (g_config.NavIndicator == 0) {
                   if (IsCompareModeActive() && !g_config.DisableEdgeNavInCompare) {
@@ -8171,7 +8181,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                   }
               }
               
-              if (w >= 300.0f * g_uiScale && h >= 200.0f * g_uiScale && !g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && (g_config.GalleryTriggerMode == 1 || g_config.GalleryTriggerMode == 2)) {
+              if (!g_imagePath.empty() && w >= 300.0f * g_uiScale && h >= 200.0f * g_uiScale && !g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && (g_config.GalleryTriggerMode == 1 || g_config.GalleryTriggerMode == 2)) {
                   float cx = w / 2.0f;
                   float neckH = 40.0f * g_uiScale;
                   float neckW = 200.0f * g_uiScale;
@@ -8195,7 +8205,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
           }
 
           // Top Hover Gallery Trigger Detection
-          if (w >= 300.0f * g_uiScale && h >= 200.0f * g_uiScale && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible()) {
+          if (!g_imagePath.empty() && w >= 300.0f * g_uiScale && h >= 200.0f * g_uiScale && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible()) {
               float cx = w / 2.0f;
               
               bool inGalleryTriggerZone = false;
@@ -8235,9 +8245,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
               }
           }
           
-          SettingsAction action = g_settingsOverlay.OnMouseMove((float)pt.x, (float)pt.y);
-          if (action == SettingsAction::RepaintAll) RequestRepaint(PaintLayer::All);
-          else if (action == SettingsAction::RepaintStatic) RequestRepaint(PaintLayer::Static);
+          if (g_settingsOverlay.IsVisible()) {
+              g_currentCursor = LoadCursor(nullptr, IDC_ARROW);
+              SettingsAction action = g_settingsOverlay.OnMouseMove((float)pt.x, (float)pt.y);
+              if (action == SettingsAction::RepaintAll) RequestRepaint(PaintLayer::All);
+              else if (action == SettingsAction::RepaintStatic) RequestRepaint(PaintLayer::Static);
+              SetCursor(g_currentCursor);
+              return 0;
+          }
           
           if (g_gallery.IsVisible()) {
               if (g_gallery.OnMouseMove(pt.x, pt.y)) {
@@ -8273,7 +8288,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
           }
           
             // Edge Navigation Hover Detection
-            if (g_config.EdgeNavClick && (!g_gallery.IsVisible() || (g_gallery.GetMode() != GalleryMode::FullGrid && !g_gallery.HitTestArea(pt.x, pt.y, (float)winW, (float)winH))) && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && !AppContext::GetInstance().Dialog.IsVisible) {
+            if (!g_imagePath.empty() && g_config.EdgeNavClick && (GetTickCount() - g_lastOverlayCloseTime >= 350) && (!g_gallery.IsVisible() || (g_gallery.GetMode() != GalleryMode::FullGrid && !g_gallery.HitTestArea(pt.x, pt.y, (float)winW, (float)winH))) && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && !AppContext::GetInstance().Dialog.IsVisible) {
                 RECT rcv; GetClientRect(hwnd, &rcv);
                 int w = rcv.right - rcv.left;
                 int h = rcv.bottom - rcv.top;
@@ -9096,7 +9111,7 @@ SKIP_EDGE_NAV:;
         }
         
         // Click Hotspot to trigger Gallery (Trigger Mode 2)
-        if (!g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && g_config.GalleryTriggerMode == 2) {
+        if (!g_imagePath.empty() && !g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && g_config.GalleryTriggerMode == 2) {
             RECT rcWnd; GetClientRect(hwnd, &rcWnd);
             float winH = (float)(rcWnd.bottom - rcWnd.top);
             float winW = (float)(rcWnd.right - rcWnd.left);
@@ -9215,7 +9230,7 @@ SKIP_EDGE_NAV:;
             } else {
                 AdjustWindowForOverlay(hwnd, true);
             }
-                     RequestRepaint(PaintLayer::All);
+                     RequestRepaint(PaintLayer::Static);
                      return 0;
                      
                  case UIHitResult::PanelClose:
@@ -9232,7 +9247,7 @@ SKIP_EDGE_NAV:;
                           }
                       }
 
-                      RequestRepaint(PaintLayer::All);
+                      RequestRepaint(PaintLayer::Static);
                       return 0;
 
                  case UIHitResult::HdrDetailsToggle:
@@ -9388,6 +9403,13 @@ SKIP_EDGE_NAV:;
     }
     case WM_LBUTTONUP: {
         POINT pt = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+
+        if (GetTickCount() - g_lastOverlayCloseTime < 350) {
+            GetPaneContext(PaneSlot::Primary).view.EdgeHoverState = 0;
+            GetPaneContext(PaneSlot::Primary).view.EdgeHoverLeft = 0;
+            GetPaneContext(PaneSlot::Primary).view.EdgeHoverRight = 0;
+            return 0; // Swallow mouse release immediately following overlay closure
+        }
 
         if (QuickView::PrintPreviewUI::GetInstance().IsVisible()) {
             bool wasPrintVisible = true;

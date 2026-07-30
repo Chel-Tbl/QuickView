@@ -1308,7 +1308,7 @@ static const LanguageTable Table_EN = {
     L"Aggressive", // Settings_Option_MemAggressive
     L"On-Demand", // Settings_Option_MemOnDemand
     L"Smart: Automatically reclaim memory only when system RAM < 4GB.\n" L"Aggressive: Keep memory reserved for absolute 0ns allocation speed.\n" L"On-Demand: Always reclaim idle memory to save physical RAM.", // Settings_Tooltip_MemoryReclaim
-    L"Show update regions button in animation mode", // Settings_Label_ShowDirtyRect
+    L"Show update regions button in animation", // Settings_Label_ShowDirtyRect
     L"Show the update region debug button in animation mode to visualize which parts of the frame are being redrawn.", // Settings_Tooltip_ShowDirtyRect
     L"Copied!", // OSD_Copied
     L"Coordinates copied!", // OSD_CoordinatesCopied
@@ -3516,7 +3516,7 @@ static const LanguageTable Table_RU = {
     L"Агрессивная (макс. производительность)", // Settings_Option_MemAggressive
     L"По требованию (мин. ОЗУ)", // Settings_Option_MemOnDemand
     L"Умная: Баланс производительности и ОЗУ.\nАгрессивная: Максимальная производительность и высокий уровень использования памяти.\nПо требованию: Сразу высвобождать память при простоях.", // Settings_Tooltip_MemoryReclaim
-    L"Показывать кнопку отображаемой области в режиме анимации", // Settings_Label_ShowDirtyRect
+    L"Кнопка обновляемых областей в анимации", // Settings_Label_ShowDirtyRect
     L"Показывать кнопку отладки отображаемой области на панели инструментов анимации для отображения обновляемых участков.", // Settings_Tooltip_ShowDirtyRect
     L"Скопировано!", // OSD_Copied
     L"Координаты скопированы!", // OSD_CoordinatesCopied
@@ -4068,7 +4068,7 @@ static const LanguageTable Table_DE = {
     L"Aggressive (Max Perf)", // Settings_Option_MemAggressive
     L"On-Demand (Min RAM)", // Settings_Option_MemOnDemand
     L"Smart: Balance performance and RAM.\nAggressive: Maximize performance, high memory usage.\nOn-Demand: Release memory immediately when idle.", // Settings_Tooltip_MemoryReclaim
-    L"Schaltfläche \"Dirty Rect\" im Animationsmodus anzeigen", // Settings_Label_ShowDirtyRect
+    L"Dirty-Rect-Taste in Animation anzeigen", // Settings_Label_ShowDirtyRect
     L"Debug-Schaltfläche für Dirty Rects in der Animations-Symbolleiste anzeigen.", // Settings_Tooltip_ShowDirtyRect
     L"Kopiert!", // OSD_Copied
     L"Koordinaten kopiert!", // OSD_CoordinatesCopied
@@ -4620,7 +4620,7 @@ static const LanguageTable Table_ES = {
     L"Aggressive (Max Perf)", // Settings_Option_MemAggressive
     L"On-Demand (Min RAM)", // Settings_Option_MemOnDemand
     L"Smart: Balance performance and RAM.\nAggressive: Maximize performance, high memory usage.\nOn-Demand: Release memory immediately when idle.", // Settings_Tooltip_MemoryReclaim
-    L"Mostrar el botón de rectángulo sucio en el modo de animación", // Settings_Label_ShowDirtyRect
+    L"Mostrar botón de regiones en animación", // Settings_Label_ShowDirtyRect
     L"Mostrar botón de depuración de Dirty Rect en la barra de herramientas de animación.", // Settings_Tooltip_ShowDirtyRect
     L"¡Copiado!", // OSD_Copied
     L"¡Coordenadas copiadas!", // OSD_CoordinatesCopied
@@ -5172,7 +5172,7 @@ static const LanguageTable Table_FR = {
     L"Aggressive (Max Perf)", // Settings_Option_MemAggressive
     L"On-Demand (Min RAM)", // Settings_Option_MemOnDemand
     L"Smart: Balance performance and RAM.\nAggressive: Maximize performance, high memory usage.\nOn-Demand: Release memory immediately when idle.", // Settings_Tooltip_MemoryReclaim
-    L"Show update regions button in animation mode", // Settings_Label_ShowDirtyRect
+    L"Show update regions button in animation", // Settings_Label_ShowDirtyRect
     L"Show the update region debug button in animation mode to visualize which parts of the frame are being redrawn.", // Settings_Tooltip_ShowDirtyRect
     L"Copied!", // OSD_Copied
     L"Coordinates copied!", // OSD_CoordinatesCopied

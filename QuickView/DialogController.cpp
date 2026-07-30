@@ -435,6 +435,8 @@ std::optional<LRESULT> DialogController::HandleMessage(HWND hwnd, UINT message, 
 std::optional<LRESULT> DialogController::OnKeyDown([[maybe_unused]] HWND hwnd, WPARAM key) {
     if (key == VK_ESCAPE) {
         m_context.Dialog.FinalResult = DialogResult::None;
+        extern DWORD g_lastOverlayCloseTime;
+        g_lastOverlayCloseTime = GetTickCount();
         m_context.Dialog.IsVisible = false;
         return 0;
     }
@@ -460,6 +462,8 @@ std::optional<LRESULT> DialogController::OnKeyDown([[maybe_unused]] HWND hwnd, W
         }
         return 0;
     } else if (key == VK_RETURN) {
+        extern DWORD g_lastOverlayCloseTime;
+        g_lastOverlayCloseTime = GetTickCount();
         m_context.Dialog.FinalResult = m_context.Dialog.Buttons[m_context.Dialog.SelectedButtonIndex].Result;
         m_context.Dialog.IsVisible = false;
         return 0;
@@ -501,6 +505,8 @@ std::optional<LRESULT> DialogController::OnLButtonDown(HWND hwnd, int x, int y) 
             } else {
                 m_context.Dialog.FinalResult = m_context.Dialog.Buttons[i].Result;
             }
+            extern DWORD g_lastOverlayCloseTime;
+            g_lastOverlayCloseTime = GetTickCount();
             m_context.Dialog.IsVisible = false;
             return 0;
         }

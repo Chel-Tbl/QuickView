@@ -234,6 +234,8 @@ void UIRenderer::UpdateHoverState(POINT mousePos, int hoverRowIndex) {
     }
     if (m_hoverWelcomeBtn != oldHover) {
       MarkStaticDirty();
+      extern void RequestRepaint(QuickView::PaintLayer layer);
+      RequestRepaint(QuickView::PaintLayer::Static);
     }
     return;
   }
@@ -290,7 +292,7 @@ HitTestResult UIRenderer::HitTest(float x, float y) {
     float neckW = 200.0f * s;
     bool isInNeck = (m_lastMousePos.y >= 0 && m_lastMousePos.y < neckH &&
                      m_lastMousePos.x >= cx - neckW && m_lastMousePos.x <= cx + neckW);
-    bool isHotspotShowing = !g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && (g_config.GalleryTriggerMode == 1 || g_config.GalleryTriggerMode == 2) && (m_width >= 300.0f * s) && (m_height >= 200.0f * s) && isInNeck;
+    bool isHotspotShowing = !g_imagePath.empty() && !g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && (g_config.GalleryTriggerMode == 1 || g_config.GalleryTriggerMode == 2) && (m_width >= 300.0f * s) && (m_height >= 200.0f * s) && isInNeck;
 
     bool isFilmstripActive = g_gallery.IsVisible() && g_gallery.GetMode() == GalleryMode::Filmstrip;
     bool hideInfoPanel = g_settingsOverlay.IsVisible() || g_helpOverlay.IsVisible() || (g_gallery.IsVisible() && !isFilmstripActive);
@@ -1248,7 +1250,7 @@ void UIRenderer::RenderDynamicLayer(ID2D1DeviceContext* dc, HWND hwnd) {
     }
 
     // Draw Top Gallery Hotspot: Vector Icon + Material Ripple (Fix #1)
-    if (!g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && (g_config.GalleryTriggerMode == 1 || g_config.GalleryTriggerMode == 2) && m_width >= 300.0f * m_uiScale && m_height >= 200.0f * m_uiScale) {
+    if (!g_imagePath.empty() && !g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && (g_config.GalleryTriggerMode == 1 || g_config.GalleryTriggerMode == 2) && m_width >= 300.0f * m_uiScale && m_height >= 200.0f * m_uiScale) {
         float cx = m_width / 2.0f;
         float neckH = 40.0f * m_uiScale;
         float neckW = 200.0f * m_uiScale;
@@ -1974,29 +1976,56 @@ void UIRenderer::DrawBorderIndicators(ID2D1DeviceContext* dc) {
     dc->CreateSolidColorBrush(indicatorClr, &borderBrush);
 
     float s = m_uiScale;
-    float thickness = 2.4f * s; // 2.4px thick line, scaled (matched with compare indicator)
+    float thickness = 2.0f * s; // 2.0px thick crisp line, scaled (matched with compare indicator)
 
     float padX = 0.0f;
     float padY = 0.0f;
     extern HWND g_mainHwnd;
     GetMaximizedWindowPaddings(g_mainHwnd, m_isFullscreen, padX, padY);
 
-    // If an edge is outside the window, draw an indicator along that window edge.
-    if (drawLeft) {
-        D2D1_RECT_F rect = D2D1::RectF(padX, padY, padX + thickness, winH - padY);
-        dc->FillRectangle(rect, borderBrush.Get());
-    }
-    if (drawRight) {
-        D2D1_RECT_F rect = D2D1::RectF(winW - padX - thickness, padY, winW - padX, winH - padY);
-        dc->FillRectangle(rect, borderBrush.Get());
-    }
-    if (drawTop) {
-        D2D1_RECT_F rect = D2D1::RectF(padX, padY, winW - padX, padY + thickness);
-        dc->FillRectangle(rect, borderBrush.Get());
-    }
-    if (drawBottom) {
-        D2D1_RECT_F rect = D2D1::RectF(padX, winH - padY - thickness, winW - padX, winH - padY);
-        dc->FillRectangle(rect, borderBrush.Get());
+    bool hasRoundCorner = (!m_isFullscreen && !IsZoomed(g_mainHwnd) && g_config.RoundedCorners);
+    float cornerR = hasRoundCorner ? (8.0f * s) : 0.0f;
+
+    if (cornerR > 0.0f) {
+        float inset = thickness * 0.5f;
+        D2D1_RECT_F outerRect = D2D1::RectF(padX + inset, padY + inset, winW - padX - inset, winH - padY - inset);
+
+        auto drawClippedEdge = [&](const D2D1_RECT_F& clipRect) {
+            dc->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            dc->DrawRoundedRectangle(D2D1::RoundedRect(outerRect, cornerR, cornerR), borderBrush.Get(), thickness);
+            dc->PopAxisAlignedClip();
+        };
+
+        if (drawLeft) {
+            drawClippedEdge(D2D1::RectF(padX, padY, padX + thickness + cornerR, winH - padY));
+        }
+        if (drawRight) {
+            drawClippedEdge(D2D1::RectF(winW - padX - thickness - cornerR, padY, winW - padX, winH - padY));
+        }
+        if (drawTop) {
+            drawClippedEdge(D2D1::RectF(padX, padY, winW - padX, padY + thickness + cornerR));
+        }
+        if (drawBottom) {
+            drawClippedEdge(D2D1::RectF(padX, winH - padY - thickness - cornerR, winW - padX, winH - padY));
+        }
+    } else {
+        // If an edge is outside the window, draw an indicator along that window edge.
+        if (drawLeft) {
+            D2D1_RECT_F rect = D2D1::RectF(padX, padY, padX + thickness, winH - padY);
+            dc->FillRectangle(rect, borderBrush.Get());
+        }
+        if (drawRight) {
+            D2D1_RECT_F rect = D2D1::RectF(winW - padX - thickness, padY, winW - padX, winH - padY);
+            dc->FillRectangle(rect, borderBrush.Get());
+        }
+        if (drawTop) {
+            D2D1_RECT_F rect = D2D1::RectF(padX, padY, winW - padX, padY + thickness);
+            dc->FillRectangle(rect, borderBrush.Get());
+        }
+        if (drawBottom) {
+            D2D1_RECT_F rect = D2D1::RectF(padX, winH - padY - thickness, winW - padX, winH - padY);
+            dc->FillRectangle(rect, borderBrush.Get());
+        }
     }
 }
 
@@ -3799,7 +3828,7 @@ void UIRenderer::DrawCompactInfo(ID2D1DeviceContext* dc) {
     float neckW = 200.0f * s;
     bool isInNeck = (m_lastMousePos.y >= 0 && m_lastMousePos.y < neckH &&
                      m_lastMousePos.x >= cx - neckW && m_lastMousePos.x <= cx + neckW);
-    bool isHotspotShowing = !g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && (g_config.GalleryTriggerMode == 1 || g_config.GalleryTriggerMode == 2) && (m_width >= 300.0f * s) && (m_height >= 200.0f * s) && isInNeck;
+    bool isHotspotShowing = !g_imagePath.empty() && !g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && (g_config.GalleryTriggerMode == 1 || g_config.GalleryTriggerMode == 2) && (m_width >= 300.0f * s) && (m_height >= 200.0f * s) && isInNeck;
     bool overlapsHotspot = (panelRect.top < neckH && panelRect.right > cx - neckW && panelRect.left < cx + neckW);
     if (isHotspotShowing && overlapsHotspot) {
         m_lastInfoPanelRect = {};
@@ -4105,7 +4134,7 @@ void UIRenderer::DrawInfoPanel(ID2D1DeviceContext* dc) {
     float neckW = 200.0f * s;
     bool isInNeck = (m_lastMousePos.y >= 0 && m_lastMousePos.y < neckH &&
                      m_lastMousePos.x >= cx - neckW && m_lastMousePos.x <= cx + neckW);
-    bool isHotspotShowing = !g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && (g_config.GalleryTriggerMode == 1 || g_config.GalleryTriggerMode == 2) && (m_width >= 300.0f * s) && (m_height >= 200.0f * s) && isInNeck;
+    bool isHotspotShowing = !g_imagePath.empty() && !g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && (g_config.GalleryTriggerMode == 1 || g_config.GalleryTriggerMode == 2) && (m_width >= 300.0f * s) && (m_height >= 200.0f * s) && isInNeck;
     bool overlapsHotspot = (panelRect.top < neckH && panelRect.right > cx - neckW && panelRect.left < cx + neckW);
     if (isHotspotShowing && overlapsHotspot) {
         m_lastInfoPanelRect = {};
@@ -4256,7 +4285,7 @@ void UIRenderer::DrawNavIndicators(ID2D1DeviceContext* dc) {
     if (g_config.NavIndicator != 0) return;
     if (g_viewState.CompareActive && g_config.DisableEdgeNavInCompare) return;
     bool isFullGridGallery = g_gallery.IsVisible() && g_gallery.GetMode() == GalleryMode::FullGrid;
-    if (g_settingsOverlay.IsVisible() || g_helpOverlay.IsVisible() || isFullGridGallery) return;
+    if (g_settingsOverlay.IsVisible() || g_helpOverlay.IsVisible() || isFullGridGallery || g_imagePath.empty()) return;
 
     const float s = m_uiScale;
     float circleRadius = 16.0f * s;
@@ -4407,7 +4436,7 @@ void UIRenderer::DrawComparePaneIndicator(ID2D1DeviceContext* dc, HWND hwnd) {
 
     if (splitRatio <= 0.05f || splitRatio >= 0.95f) splitRatio = 0.5f;
     const float s = m_uiScale;
-    const float thickness = 2.4f * s;
+    const float thickness = 2.0f * s;
     const float inset = thickness * 0.5f;
     if (m_width < 20.0f || m_height < 20.0f) return;
 
@@ -4424,28 +4453,27 @@ void UIRenderer::DrawComparePaneIndicator(ID2D1DeviceContext* dc, HWND hwnd) {
     dc->CreateSolidColorBrush(accentClr, &brush);
     if (!brush) return;
 
-    D2D1_RECT_F rect{};
+    bool hasRoundCorner = (!m_isFullscreen && !IsZoomed(hwnd) && g_config.RoundedCorners);
+    float cornerR = hasRoundCorner ? (8.0f * s) : 0.0f;
+
+    D2D1_RECT_F fullRect = D2D1::RectF(padX + inset, padY + inset, padX + drawWidth - inset, padY + drawHeight - inset);
+
+    D2D1_RECT_F clipRect{};
     if (pane == 0) {
-        rect = D2D1::RectF(padX + inset, padY + inset, splitX - inset, padY + drawHeight - inset);
+        clipRect = D2D1::RectF(padX, padY, splitX + inset, padY + drawHeight);
     } else {
-        rect = D2D1::RectF(splitX + inset, padY + inset, padX + drawWidth - inset, padY + drawHeight - inset);
+        clipRect = D2D1::RectF(splitX - inset, padY, padX + drawWidth, padY + drawHeight);
     }
 
-    if (rect.right <= rect.left + 1.0f || rect.bottom <= rect.top + 1.0f) return;
+    if (clipRect.right <= clipRect.left || clipRect.bottom <= clipRect.top) return;
 
-    const D2D1_POINT_2F topLeft = D2D1::Point2F(rect.left, rect.top);
-    const D2D1_POINT_2F topRight = D2D1::Point2F(rect.right, rect.top);
-    const D2D1_POINT_2F bottomLeft = D2D1::Point2F(rect.left, rect.bottom);
-    const D2D1_POINT_2F bottomRight = D2D1::Point2F(rect.right, rect.bottom);
-
-    dc->DrawLine(topLeft, topRight, brush.Get(), thickness);
-    dc->DrawLine(bottomLeft, bottomRight, brush.Get(), thickness);
-
-    if (pane == 0) {
-        dc->DrawLine(topLeft, bottomLeft, brush.Get(), thickness);
+    dc->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    if (cornerR > 0.0f) {
+        dc->DrawRoundedRectangle(D2D1::RoundedRect(fullRect, cornerR, cornerR), brush.Get(), thickness);
     } else {
-        dc->DrawLine(topRight, bottomRight, brush.Get(), thickness);
+        dc->DrawRectangle(fullRect, brush.Get(), thickness);
     }
+    dc->PopAxisAlignedClip();
 }
 
 namespace {
@@ -4580,7 +4608,7 @@ void UIRenderer::DrawCompareInfoHUD(ID2D1DeviceContext* dc) {
     float neckW = 200.0f * sUI;
     bool isInNeck = (m_lastMousePos.y >= 0 && m_lastMousePos.y < neckH &&
                      m_lastMousePos.x >= cx - neckW && m_lastMousePos.x <= cx + neckW);
-    bool isHotspotShowing = !g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && (g_config.GalleryTriggerMode == 1 || g_config.GalleryTriggerMode == 2) && (m_width >= 300.0f * sUI) && (m_height >= 200.0f * sUI) && isInNeck;
+    bool isHotspotShowing = !g_imagePath.empty() && !g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && (g_config.GalleryTriggerMode == 1 || g_config.GalleryTriggerMode == 2) && (m_width >= 300.0f * sUI) && (m_height >= 200.0f * sUI) && isInNeck;
     if (g_gallery.IsVisible() || isHotspotShowing || g_settingsOverlay.IsVisible() || g_helpOverlay.IsVisible() || AppContext::GetInstance().Dialog.IsVisible) {
         m_lastHUDRect = {};
         m_hudToggleLiteRect = {};
@@ -4729,7 +4757,7 @@ void UIRenderer::DrawCompareInfoHUD(ID2D1DeviceContext* dc) {
         extern GalleryOverlay g_gallery;
         bool isInNeck = (m_lastMousePos.y >= 0 && m_lastMousePos.y < neckH &&
                          m_lastMousePos.x >= cx - neckW && m_lastMousePos.x <= cx + neckW);
-        bool isHotspotShowing = !g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && (g_config.GalleryTriggerMode == 1 || g_config.GalleryTriggerMode == 2) && (m_width >= 300.0f * sUI) && (m_height >= 200.0f * sUI) && isInNeck;
+        bool isHotspotShowing = !g_imagePath.empty() && !g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible() && (g_config.GalleryTriggerMode == 1 || g_config.GalleryTriggerMode == 2) && (m_width >= 300.0f * sUI) && (m_height >= 200.0f * sUI) && isInNeck;
         bool overlapsHotspot = (panelRect.top < neckH && panelRect.right > cx - neckW && panelRect.left < cx + neckW);
         if (isHotspotShowing && overlapsHotspot) {
             m_lastHUDRect = {};

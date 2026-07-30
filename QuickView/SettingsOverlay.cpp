@@ -2958,8 +2958,8 @@ void SettingsOverlay::Render(ID2D1DeviceContext* pRT, float winW, float winH) {
             }
 
             // Calculate Rect for Hit Testing
-            item.rect = D2D1::RectF(contentX, contentY, contentX + contentW, contentY + rowHeight);
-            item.interactRect = item.rect; // Default
+            item.interactRect = {};
+            item.interactRect2 = {};
 
 
             // 1. Header Type
@@ -3368,7 +3368,7 @@ void SettingsOverlay::Render(ID2D1DeviceContext* pRT, float winW, float winH) {
                 
                 // Define overall item.rect for scrolling / basic containment
                 item.rect = D2D1::RectF(contentX, headerRect.top, contentX + contentW, contentY);
-                item.interactRect = item.rect;
+                item.interactRect = {};
                 
                 // Draw limit warning feedback if active
                 if (!item.statusText.empty() && item.statusSetTime > 0) {
@@ -3490,12 +3490,13 @@ void SettingsOverlay::Render(ID2D1DeviceContext* pRT, float winW, float winH) {
 
             // Tooltip Icon (?)
             if (item.tooltipText != nullptr && item.tooltipText[0] != L'\0') {
-                float iconX = contentX + textW + 8.0f * s;
+                float iconX = contentX + textW + 10.0f * s;
                 if (item.isNewOption) {
                     iconX += badgeW + 6.0f * s;
                 }
                 float iconSize = 24.0f * s;
-                iconX = std::min(iconX, contentX + labelWidth - iconSize);
+                float maxIconX = contentX + (LABEL_COLUMN_WIDTH - 4.0f) * s - iconSize;
+                iconX = std::min(iconX, maxIconX);
                 float iconY = contentY + (rowHeight - iconSize) / 2.0f;
                 item.tooltipIconRect = D2D1::RectF(iconX, iconY, iconX + iconSize, iconY + iconSize);
 
@@ -4363,8 +4364,18 @@ SettingsAction SettingsOverlay::OnMouseMove(float x, float y) {
     SettingsItem* oldTooltipHover = m_pHoverTooltipItem;
     m_pHoverTooltipItem = nullptr;
 
-    // Default Cursor
-    ::SetCursor(::LoadCursor(NULL, IDC_ARROW));
+    // Default Cursor for Overlay
+    g_currentCursor = ::LoadCursor(NULL, IDC_ARROW);
+    ::SetCursor(g_currentCursor);
+
+    // Sidebar & Close button cursor hit testing
+    float sidebarW = SIDEBAR_WIDTH * m_uiScale;
+    float backH = 50.0f * m_uiScale;
+    float tabStep = 45.0f * m_uiScale;
+    float sidebarInteractiveHeight = backH + (float)m_tabs.size() * tabStep;
+    if (x >= m_hudX && x < m_hudX + sidebarW && y >= m_hudY && y <= m_hudY + sidebarInteractiveHeight) {
+        g_currentCursor = ::LoadCursor(NULL, IDC_HAND);
+    }
 
     // Scroll clipping bounds
     float hudY = m_hudY;
