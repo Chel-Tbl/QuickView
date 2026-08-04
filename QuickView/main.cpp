@@ -3500,16 +3500,18 @@ static void PerformZoom100(HWND hwnd, bool allowResizeWindow = true) {
             }
         }
         
-        // Calculate the Scale Factor required to make the Rendered Surface match the Original Size
-        // TargetScale = OriginalW / SurfaceW
-        float renderScaleTarget = (originalW / imgW);
+        // [Bugfix] Compute target zoom against the TRUE dimensions that the surface will upgrade to,
+        // rather than the current temporary DComp surface size. This eliminates cross-axis rounding errors
+        // that cause `targetZoom` to deviate slightly from 1.0, triggering DComp LINEAR interpolation blur.
+        VisualState targetVs = {};
+        targetVs.VisualSize = D2D1::SizeF(originalW, originalH);
             
         // Logic to resize window to wrap image at 100% if allowed
         if (allowResizeWindow && !IsZoomed(hwnd) && !g_isFullScreen && !g_runtime.LockWindowSize) {
-                int targetW = (int)originalW; // Target TRUE pixel width
-                int targetH = (int)originalH;
-                
-                RECT bounds = GetWindowExpansionBounds(hwnd);
+                 int targetW = (int)originalW; // Target TRUE pixel width
+                 int targetH = (int)originalH;
+                 
+                 RECT bounds = GetWindowExpansionBounds(hwnd);
                  int maxW = (bounds.right - bounds.left);
                  int maxH = (bounds.bottom - bounds.top);
                  
@@ -3528,18 +3530,18 @@ static void PerformZoom100(HWND hwnd, bool allowResizeWindow = true) {
                               SWP_NOZORDER | SWP_NOACTIVATE);
                  
                  RECT rcNew; GetClientRect(hwnd, &rcNew);
-                 float galleryHNew = (g_gallery.IsPinned() && g_gallery.IsVisible()) ? g_gallery.GetVisualHeight((float)rcNew.bottom) : 0.0f;
-                 float effHNew = std::max(1.0f, (float)rcNew.bottom - galleryHNew);
-                 VisualState vs = GetVisualState();
-                 float newFitScale = ComputeBaseFitScaleForVisual(vs, (float)rcNew.right, effHNew);
-                 if (newFitScale > 0.0001f) GetPaneContext(PaneSlot::Primary).view.Zoom = renderScaleTarget / newFitScale;
+                 float galleryH = (g_gallery.IsPinned() && g_gallery.IsVisible()) ? g_gallery.GetVisualHeight((float)rcNew.bottom) : 0.0f;
+                 float effWinH = std::max(1.0f, (float)rcNew.bottom - galleryH);
+                 
+                 float targetBaseFit = ComputeBaseFitScaleForVisual(targetVs, (float)rcNew.right, effWinH);
+                 if (targetBaseFit > 0) GetPaneContext(PaneSlot::Primary).view.Zoom = 1.0f / targetBaseFit;
             } else {
                 RECT rc; GetClientRect(hwnd, &rc);
                 float galleryH = (g_gallery.IsPinned() && g_gallery.IsVisible()) ? g_gallery.GetVisualHeight((float)rc.bottom) : 0.0f;
-                float effH = std::max(1.0f, (float)rc.bottom - galleryH);
-                VisualState vs = GetVisualState();
-                float fitScale = ComputeBaseFitScaleForVisual(vs, (float)rc.right, effH);
-                if (fitScale > 0.0001f) GetPaneContext(PaneSlot::Primary).view.Zoom = renderScaleTarget / fitScale;
+                float effWinH = std::max(1.0f, (float)rc.bottom - galleryH);
+                
+                float targetBaseFit = ComputeBaseFitScaleForVisual(targetVs, (float)rc.right, effWinH);
+                if (targetBaseFit > 0) GetPaneContext(PaneSlot::Primary).view.Zoom = 1.0f / targetBaseFit;
             }
 
             GetPaneContext(PaneSlot::Primary).view.PanX = 0;
