@@ -14840,12 +14840,21 @@ bool HandleHotkeyAction(HWND hwnd, HotkeyAction action) {
             float currentRealScale = GetCurrentRealScale(hwnd);
             bool is100Percent = (fabsf(currentRealScale - 1.0f) < 0.05f);
             bool isMaximizedOrFullscreen = IsZoomed(hwnd) || g_isFullScreen;
+            bool isWindowFixed = isMaximizedOrFullscreen || g_runtime.LockWindowSize;
 
-            if (is100Percent && !isMaximizedOrFullscreen && s_restoredWindowRect.right > s_restoredWindowRect.left) {
-                PerformRestoreWindow(hwnd);
+            if (isWindowFixed) {
+                if (is100Percent) {
+                    PerformZoomFit(hwnd);
+                } else {
+                    PerformZoom100(hwnd);
+                }
             } else {
-                if (!isMaximizedOrFullscreen && s_restoredWindowRect.right == 0) GetWindowRect(hwnd, &s_restoredWindowRect);
-                PerformZoom100(hwnd);
+                if (is100Percent && s_restoredWindowRect.right > s_restoredWindowRect.left) {
+                    PerformRestoreWindow(hwnd);
+                } else {
+                    if (s_restoredWindowRect.right == 0) GetWindowRect(hwnd, &s_restoredWindowRect);
+                    PerformZoom100(hwnd);
+                }
             }
         }
         return true;
@@ -14854,22 +14863,34 @@ bool HandleHotkeyAction(HWND hwnd, HotkeyAction action) {
         if (IsCompareModeActive()) {
             PerformCompareZoomFit(hwnd);
         } else if (GetPaneContext(PaneSlot::Primary).resource) {
-            HMONITOR hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-            MONITORINFO mi{}; mi.cbSize = sizeof(mi); GetMonitorInfoW(hMon, &mi);
-            int maxW = mi.rcWork.right - mi.rcWork.left;
-            int maxH = mi.rcWork.bottom - mi.rcWork.top;
-            RECT rcWin; GetWindowRect(hwnd, &rcWin);
-            int winWidth = rcWin.right - rcWin.left;
-            int winHeight = rcWin.bottom - rcWin.top;
-
+            float currentRealScale = GetCurrentRealScale(hwnd);
+            bool is100Percent = (fabsf(currentRealScale - 1.0f) < 0.05f);
             bool isMaximizedOrFullscreen = IsZoomed(hwnd) || g_isFullScreen;
-            bool isFitWindow = (winWidth >= maxW - 2 || winHeight >= maxH - 2) || isMaximizedOrFullscreen;
+            bool isWindowFixed = isMaximizedOrFullscreen || g_runtime.LockWindowSize;
+            bool isFitZoom = (fabsf(GetPaneContext(PaneSlot::Primary).view.Zoom - 1.0f) < 0.02f);
 
-            if (isFitWindow && !isMaximizedOrFullscreen && s_restoredWindowRect.right > s_restoredWindowRect.left) {
-                PerformRestoreWindow(hwnd);
+            if (isWindowFixed) {
+                if (isFitZoom && !is100Percent) {
+                    PerformZoom100(hwnd);
+                } else {
+                    PerformZoomFit(hwnd);
+                }
             } else {
-                if (!isMaximizedOrFullscreen && s_restoredWindowRect.right == 0) GetWindowRect(hwnd, &s_restoredWindowRect);
-                PerformZoomFit(hwnd);
+                HMONITOR hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                MONITORINFO mi{}; mi.cbSize = sizeof(mi); GetMonitorInfoW(hMon, &mi);
+                int maxW = mi.rcWork.right - mi.rcWork.left;
+                int maxH = mi.rcWork.bottom - mi.rcWork.top;
+                RECT rcWin; GetWindowRect(hwnd, &rcWin);
+                int winWidth = rcWin.right - rcWin.left;
+                int winHeight = rcWin.bottom - rcWin.top;
+                bool isFitWindow = (winWidth >= maxW - 2 || winHeight >= maxH - 2);
+
+                if (isFitWindow && s_restoredWindowRect.right > s_restoredWindowRect.left) {
+                    PerformRestoreWindow(hwnd);
+                } else {
+                    if (s_restoredWindowRect.right == 0) GetWindowRect(hwnd, &s_restoredWindowRect);
+                    PerformZoomFit(hwnd);
+                }
             }
         }
         return true;
