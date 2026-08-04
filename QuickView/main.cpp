@@ -3368,7 +3368,7 @@ static float GetCurrentRealScale(HWND hwnd) {
 }
 
 static void PerformRestoreWindow(HWND hwnd) {
-    if (s_restoredWindowRect.right > s_restoredWindowRect.left && !IsZoomed(hwnd) && !g_isFullScreen) {
+    if (s_restoredWindowRect.right > s_restoredWindowRect.left && !IsZoomed(hwnd) && !g_isFullScreen && !g_runtime.LockWindowSize) {
         int rW = s_restoredWindowRect.right - s_restoredWindowRect.left;
         int rH = s_restoredWindowRect.bottom - s_restoredWindowRect.top;
         SetWindowPos(hwnd, nullptr, s_restoredWindowRect.left, s_restoredWindowRect.top, rW, rH, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -3767,7 +3767,7 @@ static void ShowZoomOsd(HWND hwnd, float newTotalScale) {
 static void PerformZoomFit(HWND hwnd, float maxScreenPct = 1.0f, bool allowResizeWindow = true) {
     AppContext::GetInstance().ZoomAnimCtrl->Reset();
     if (GetPaneContext(PaneSlot::Primary).resource) {
-        if (!allowResizeWindow) {
+        if (!allowResizeWindow || g_runtime.LockWindowSize) {
             GetPaneContext(PaneSlot::Primary).view.Zoom = ComputeFitZoom(hwnd);
             GetPaneContext(PaneSlot::Primary).view.PanX = 0;
             GetPaneContext(PaneSlot::Primary).view.PanY = 0;
@@ -8732,10 +8732,11 @@ SKIP_EDGE_NAV:;
             int winHeight = rcWin.bottom - rcWin.top;
 
             bool isMaximizedOrFullscreen = IsZoomed(hwnd) || g_isFullScreen;
+            bool isWindowFixed = isMaximizedOrFullscreen || g_runtime.LockWindowSize;
             bool isFitWindow = (winWidth >= maxW - 2 || winHeight >= maxH - 2) || isMaximizedOrFullscreen;
 
-            if (isMaximizedOrFullscreen) {
-                // In fullscreen/maximized, ONLY toggle between 100% and Fit. No restoring window size.
+            if (isWindowFixed) {
+                // In fullscreen/maximized/locked mode, ONLY toggle between 100% and Fit. No restoring window size.
                 if (is100Percent) {
                     PerformZoomFit(hwnd);
                 } else {
