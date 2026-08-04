@@ -802,56 +802,49 @@ static float ComputeBaseFitScaleForVisual(const VisualState& vs, float winW, flo
 void ApplyFullScreenZoomMode(HWND hwnd) {
     if (!GetPaneContext(PaneSlot::Primary).resource || (!g_isFullScreen && !IsZoomed(hwnd))) return;
 
-    // Helper: compute the Zoom value to make the image fit the current window,
-    // accounting for the baseFit cap on small images.
-    auto computeFitZoomLocal = [&]() -> float {
-        D2D1_SIZE_F effSize = GetVisualImageSize();
-        if (effSize.width <= 0 || effSize.height <= 0) return 1.0f;
-        RECT rc; GetClientRect(hwnd, &rc);
-        float fW = (float)rc.right;
-        float fH = (float)rc.bottom;
-        if (fW <= 0 || fH <= 0) return 1.0f;
-        float rawFit = std::min(fW / effSize.width, fH / effSize.height);
-        VisualState vs = GetVisualState();
-        float cappedFit = ComputeBaseFitScaleForVisual(vs, fW, fH);
-        return (cappedFit > 0.0001f) ? rawFit / cappedFit : 1.0f;
-    };
+    // 1. Obtain true intrinsic visual dimensions (imgW, imgH) unpolluted by DComp surface size
+    float imgW = 0.0f;
+    float imgH = 0.0f;
+    VisualState vs = GetVisualState();
 
-    if (g_config.FullScreenZoomMode == 0) { // Fit
-        GetPaneContext(PaneSlot::Primary).view.Zoom = computeFitZoomLocal();
-    } else { // Auto (100% / Fit)
-        D2D1_SIZE_F effSize = GetVisualImageSize();
-        float imgW = effSize.width;
-        float imgH = effSize.height;
-        if (imgW <= 0 || imgH <= 0) return;
+    if (GetPaneContext(PaneSlot::Primary).metadata.Width > 0 && GetPaneContext(PaneSlot::Primary).metadata.Height > 0) {
+        imgW = (float)(vs.IsRotated90 ? GetPaneContext(PaneSlot::Primary).metadata.Height : GetPaneContext(PaneSlot::Primary).metadata.Width);
+        imgH = (float)(vs.IsRotated90 ? GetPaneContext(PaneSlot::Primary).metadata.Width : GetPaneContext(PaneSlot::Primary).metadata.Height);
+    } else if (GetPaneContext(PaneSlot::Primary).resource) {
+        D2D1_SIZE_F sz = GetPaneContext(PaneSlot::Primary).resource.GetSize();
+        imgW = vs.IsRotated90 ? sz.height : sz.width;
+        imgH = vs.IsRotated90 ? sz.width : sz.height;
+    }
+    if (imgW <= 0.0f || imgH <= 0.0f) return;
 
-        RECT rc; GetClientRect(hwnd, &rc);
-        float winW = (float)rc.right;
-        float winH = (float)rc.bottom;
-        if (winW <= 0 || winH <= 0) return;
+    // 2. Get effective window client dimensions
+    RECT rc; GetClientRect(hwnd, &rc);
+    float winW = (float)rc.right;
+    float galleryH = (g_gallery.IsPinned() && g_gallery.IsVisible()) ? g_gallery.GetVisualHeight((float)rc.bottom) : 0.0f;
+    float winH = (float)rc.bottom - galleryH;
+    if (winH < 1.0f) winH = (float)rc.bottom;
+    if (winW <= 0.0f || winH <= 0.0f) return;
 
-        // The raw max scale to fit window
-        float rawFitScale = std::min(winW / imgW, winH / imgH);
+    // 3. Compute base fit scale from true intrinsic size (incorporating < 200px small image protection)
+    VisualState vsIntrinsic = vs;
+    vsIntrinsic.VisualSize = D2D1::SizeF(imgW, imgH);
+    float baseFit = ComputeBaseFitScaleForVisual(vsIntrinsic, winW, winH);
+    if (baseFit <= 0.0001f) baseFit = 1.0f;
 
-        // Use true original metadata size to determine 100% target
-        float originalW = imgW;
-        VisualState vs = GetVisualState();
-        if (GetPaneContext(PaneSlot::Primary).metadata.Width > 0) {
-            originalW = (float)(vs.IsRotated90 ? GetPaneContext(PaneSlot::Primary).metadata.Height : GetPaneContext(PaneSlot::Primary).metadata.Width);
-        }
-
-        // The scale factor required to render at exactly 100% original size
-        float renderScaleTarget = originalW / imgW;
-
-        // If the 100% size is smaller than the window, use 100% (renderScaleTarget),
-        // which means setting Zoom so that baseFit * Zoom = renderScaleTarget
-        if (rawFitScale > renderScaleTarget) {
-            float baseFit = ComputeBaseFitScaleForVisual(vs, winW, winH);
-            GetPaneContext(PaneSlot::Primary).view.Zoom = (baseFit > 0.0001f) ? (renderScaleTarget / baseFit) : 1.0f;
+    // 4. Determine target scale factor based on FullScreenZoomMode configuration
+    float targetScale = 1.0f;
+    if (g_config.FullScreenZoomMode == 0) { // 0 = Fit Screen
+        targetScale = std::min(winW / imgW, winH / imgH);
+    } else { // 1 = Auto (100% / Fit)
+        if (imgW <= winW && imgH <= winH) {
+            targetScale = 1.0f; // Image fits inside screen -> Render at true 100% (1:1)
         } else {
-            GetPaneContext(PaneSlot::Primary).view.Zoom = computeFitZoomLocal(); // Fit
+            targetScale = std::min(winW / imgW, winH / imgH); // Image exceeds screen -> Fit Screen
         }
     }
+
+    // 5. Calculate final Zoom value (baseFit * Zoom = targetScale) & reset pan offsets
+    GetPaneContext(PaneSlot::Primary).view.Zoom = targetScale / baseFit;
     GetPaneContext(PaneSlot::Primary).view.PanX = 0;
     GetPaneContext(PaneSlot::Primary).view.PanY = 0;
 }
@@ -5826,7 +5819,16 @@ void SyncDCompState([[maybe_unused]] HWND hwnd, float winW, float winH, bool ani
             } else {
                 g_compEngine->UpdateTransformMatrix(vs, winW, winH, displayZoom, displayPanX, displayPanY, animationDurationMs);
 
-                DCOMPOSITION_BITMAP_INTERPOLATION_MODE interpMode = GetOptimalDCompInterpolationMode(displayZoom, vs.VisualSize.width, vs.VisualSize.height);
+                float origW = 0.0f;
+                float origH = 0.0f;
+                if (GetPaneContext(PaneSlot::Primary).metadata.Width > 0 && GetPaneContext(PaneSlot::Primary).metadata.Height > 0) {
+                    origW = (float)(vs.IsRotated90 ? GetPaneContext(PaneSlot::Primary).metadata.Height : GetPaneContext(PaneSlot::Primary).metadata.Width);
+                    origH = (float)(vs.IsRotated90 ? GetPaneContext(PaneSlot::Primary).metadata.Width : GetPaneContext(PaneSlot::Primary).metadata.Height);
+                } else {
+                    origW = vs.VisualSize.width;
+                    origH = vs.VisualSize.height;
+                }
+                DCOMPOSITION_BITMAP_INTERPOLATION_MODE interpMode = GetOptimalDCompInterpolationMode(displayZoom, origW, origH);
                 g_compEngine->SetImageInterpolationMode(interpMode);
             }
         }
