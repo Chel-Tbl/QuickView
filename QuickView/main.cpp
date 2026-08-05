@@ -4675,7 +4675,7 @@ void LoadConfig() {
     wchar_t bufNavX[32], bufNavY[32];
     GetPrivateProfileStringW(L"View", L"NavigatorOffsetX", L"12.0", bufNavX, 32, iniPath.c_str());
     g_config.NavigatorOffsetX = (float)_wtof(bufNavX);
-    GetPrivateProfileStringW(L"View", L"NavigatorOffsetY", L"12.0", bufNavY, 32, iniPath.c_str());
+    GetPrivateProfileStringW(L"View", L"NavigatorOffsetY", L"44.0", bufNavY, 32, iniPath.c_str());
     g_config.NavigatorOffsetY = (float)_wtof(bufNavY);
     g_config.NavigatorAlignX = GetPrivateProfileIntW(L"View", L"NavigatorAlignX", 1, iniPath.c_str());
     g_config.NavigatorAlignY = GetPrivateProfileIntW(L"View", L"NavigatorAlignY", 0, iniPath.c_str());
@@ -7939,16 +7939,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                   if (minimapW <= 0.0f) minimapW = 150.0f * s;
                   if (minimapH <= 0.0f) minimapH = 150.0f * s;
                   
-                  float topOffset = 0.0f;
-                  if (vpLeft + vpW >= winW - 1.0f && g_showControls) {
-                      topOffset += 32.0f * s;
-                  }
-                  
                   // Clamp to keep it fully within the viewport
                   float margin = 8.0f * s;
                   float minX = vpLeft + margin;
                   float maxX = vpLeft + vpW - minimapW - margin;
-                  float minY = topOffset + margin;
+                  float minY = margin;
+                  if (currentMinimapX + minimapW * 0.5f >= vpLeft + vpW * 0.5f && vpLeft + vpW >= winW - 1.0f) {
+                      minY = 32.0f * s + margin;
+                  }
                   float maxY = vpH - minimapH - margin;
                   
                   float clampedX = std::clamp(currentMinimapX, minX, (std::max)(minX, maxX));
@@ -7963,9 +7961,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                       g_config.NavigatorOffsetX = (vpLeft + vpW - (clampedX + minimapW)) / s;
                   }
                   
-                  if (clampedY + minimapH * 0.5f < topOffset + (vpH - topOffset) * 0.5f) {
+                  if (clampedY + minimapH * 0.5f < vpH * 0.5f) {
                       g_config.NavigatorAlignY = 0; // Top
-                      g_config.NavigatorOffsetY = (clampedY - topOffset) / s;
+                      g_config.NavigatorOffsetY = clampedY / s;
                   } else {
                       g_config.NavigatorAlignY = 1; // Bottom
                       g_config.NavigatorOffsetY = (vpH - (clampedY + minimapH)) / s;
@@ -8127,7 +8125,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
               }
 
               int oldHoverIdx = g_winCtrlHoverState;
-              if (g_showControls && g_uiRenderer) {
+              auto miniHit = HitTestMinimaps(pt);
+              if (g_showControls && g_uiRenderer && miniHit.minimapIdx == -1) {
                   g_winCtrlHoverState = HitTestWindowControlButton(pt);
                   if (g_winCtrlHoverState != -1) {
                       g_currentCursor = LoadCursor(nullptr, IDC_HAND);

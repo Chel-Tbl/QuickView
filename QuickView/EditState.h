@@ -587,7 +587,7 @@ struct AppConfig {
     float BorderIndicatorCustomB = 1.00f;
     int ShowNavigator = 0; // 0=Auto, 1=On, 2=Off
     float NavigatorOffsetX = 12.0f;
-    float NavigatorOffsetY = 12.0f;
+    float NavigatorOffsetY = 44.0f;
     int NavigatorAlignX = 1; // 0=Left, 1=Right
     int NavigatorAlignY = 0; // 0=Top, 1=Bottom
 
