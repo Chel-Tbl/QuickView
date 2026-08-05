@@ -324,6 +324,7 @@ std::array<HotkeyBinding, static_cast<size_t>(HotkeyAction::Count)> g_hotkeys = 
     HotkeyBinding{ HotkeyAction::ToggleGallery, KeyCombo{ 'T', 0 }, KeyCombo{ 'T', 0 } },
     HotkeyBinding{ HotkeyAction::ToggleInfoPanel, KeyCombo{ VK_TAB, 0 }, KeyCombo{ VK_TAB, 0 } },
     HotkeyBinding{ HotkeyAction::ToggleExifPanel, KeyCombo{ 'I', 0 }, KeyCombo{ 'I', 0 } },
+    HotkeyBinding{ HotkeyAction::ToggleMinimap, KeyCombo{ 'M', 0 }, KeyCombo{ 'M', 0 } },
     HotkeyBinding{ HotkeyAction::ToggleFullscreen, KeyCombo{ VK_F11, 0 }, KeyCombo{ VK_F11, 0 } },
     HotkeyBinding{ HotkeyAction::ToggleSpan, KeyCombo{ VK_F11, 1 }, KeyCombo{ VK_F11, 1 } }, // Ctrl + F11
     HotkeyBinding{ HotkeyAction::ToggleSlideshow, KeyCombo{ VK_F10, 0 }, KeyCombo{ VK_F10, 0 } },
@@ -6819,13 +6820,12 @@ struct MinimapHitResult {
 };
 
 static MinimapHitResult HitTestMinimaps(POINT pt) {
-    if (g_config.ShowNavigator == 2) return {};
     const float s = g_uiScale;
     const float edgeBuffer = 8.0f * s;
     
     for (int idx : {1, 0}) {
         auto& minimap = AppContext::GetInstance().Minimaps[idx];
-        if (minimap.closedByUser) continue;
+        if (minimap.overrideState == MinimapOverride::Hide) continue;
         if (minimap.layoutRect.right - minimap.layoutRect.left <= 0.0f) continue;
         
         // 1. Close button
@@ -9041,7 +9041,7 @@ SKIP_EDGE_NAV:;
         if (miniHit.minimapIdx != -1) {
             auto& minimap = AppContext::GetInstance().Minimaps[miniHit.minimapIdx];
             if (miniHit.isClose) {
-                minimap.closedByUser = true;
+                minimap.overrideState = MinimapOverride::Hide;
                 RequestRepaint(PaintLayer::Static | PaintLayer::Dynamic);
                 return 0;
             } else if (miniHit.isEdge) {
@@ -15047,6 +15047,52 @@ bool HandleHotkeyAction(HWND hwnd, HotkeyAction action) {
             }
             RequestRepaint(PaintLayer::Static);
         }
+        return true;
+
+    case HotkeyAction::ToggleMinimap:
+        for (int idx : {0, 1}) {
+            auto& minimap = AppContext::GetInstance().Minimaps[idx];
+            if (minimap.overrideState == MinimapOverride::Show) {
+                minimap.overrideState = MinimapOverride::Hide;
+            } else if (minimap.overrideState == MinimapOverride::Hide) {
+                minimap.overrideState = MinimapOverride::Show;
+            } else {
+                bool currentlyShownByDefault = false;
+                if (g_config.ShowNavigator == 1) {
+                    currentlyShownByDefault = true;
+                } else if (g_config.ShowNavigator == 0) {
+                    PaneSlot slot = (idx == 1) ? PaneSlot::Left : PaneSlot::Primary;
+                    auto& pane = GetPaneContext(slot);
+                    if (pane.resource) {
+                        RECT rcClient; GetClientRect(hwnd, &rcClient);
+                        float winW = (float)(rcClient.right - rcClient.left);
+                        float winH = (float)(rcClient.bottom - rcClient.top);
+                        if (IsCompareModeActive() && AppContext::GetInstance().Compare.mode == ViewMode::CompareSideBySide) {
+                            winW *= 0.5f;
+                        }
+                        int baseExif = (slot == PaneSlot::Primary) ? g_renderExifOrientation : pane.view.ExifOrientation;
+                        int exifOrientation = GetEffectiveExifOrientation(baseExif, pane.editState);
+                        const D2D1_SIZE_F orientedSize = GetOrientedSize(pane.resource, exifOrientation);
+                        if (orientedSize.width > 0.0f && orientedSize.height > 0.0f) {
+                            float fitScale = std::min(winW / orientedSize.width, winH / orientedSize.height);
+                            float totalScale = fitScale * (std::max)(0.02f, pane.view.Zoom);
+                            float scaledW = orientedSize.width * totalScale;
+                            float scaledH = orientedSize.height * totalScale;
+                            if (scaledW > winW * 1.5f || scaledH > winH * 1.5f) {
+                                currentlyShownByDefault = true;
+                            }
+                        }
+                    }
+                }
+                
+                if (currentlyShownByDefault) {
+                    minimap.overrideState = MinimapOverride::Hide;
+                } else {
+                    minimap.overrideState = MinimapOverride::Show;
+                }
+            }
+        }
+        RequestRepaint(PaintLayer::Static | PaintLayer::Dynamic);
         return true;
 
     case HotkeyAction::ToggleFullscreen:

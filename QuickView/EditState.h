@@ -143,6 +143,7 @@ enum class HotkeyAction : uint8_t {
     ToggleGallery,     // Toggle Gallery Overlay
     ToggleInfoPanel,   // Toggle Info Panel (Lite)
     ToggleExifPanel,   // Toggle Exif Panel (Full)
+    ToggleMinimap,     // Toggle Minimap visibility (Hotkey M)
     ToggleFullscreen,  // Toggle Fullscreen
     ToggleSpan,        // Toggle Span Displays
     ToggleSlideshow,   // Toggle Slideshow Mode
@@ -204,6 +205,7 @@ inline std::wstring_view HotkeyActionToString(HotkeyAction action) noexcept {
         case HotkeyAction::ToggleGallery: return L"ToggleGallery";
         case HotkeyAction::ToggleInfoPanel: return L"ToggleInfoPanel";
         case HotkeyAction::ToggleExifPanel: return L"ToggleExifPanel";
+        case HotkeyAction::ToggleMinimap: return L"ToggleMinimap";
         case HotkeyAction::ToggleFullscreen: return L"ToggleFullscreen";
         case HotkeyAction::ToggleSpan: return L"ToggleSpan";
         case HotkeyAction::OpenFile: return L"OpenFile";
@@ -261,6 +263,7 @@ inline HotkeyAction StringToHotkeyAction(std::wstring_view sv) noexcept {
     if (sv == L"ToggleGallery") return HotkeyAction::ToggleGallery;
     if (sv == L"ToggleInfoPanel") return HotkeyAction::ToggleInfoPanel;
     if (sv == L"ToggleExifPanel") return HotkeyAction::ToggleExifPanel;
+    if (sv == L"ToggleMinimap") return HotkeyAction::ToggleMinimap;
     if (sv == L"ToggleFullscreen") return HotkeyAction::ToggleFullscreen;
     if (sv == L"ToggleSpan") return HotkeyAction::ToggleSpan;
     if (sv == L"OpenFile") return HotkeyAction::OpenFile;

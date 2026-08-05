@@ -2047,6 +2047,9 @@ void SettingsOverlay::BuildMenu() {
         if (action == HotkeyAction::Loupe) {
             item.tooltipText = AppStrings::Settings_Tooltip_LoupeHotkey;
         }
+        if (action == HotkeyAction::ToggleMinimap) {
+            item.isNewOption = true;
+        }
         // Apply pending conflict status if any
         if (m_lastConflictAction == action && GetTickCount() - m_lastConflictTime < 3000) {
             item.statusText = m_lastConflictMsg;

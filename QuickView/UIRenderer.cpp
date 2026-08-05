@@ -5877,7 +5877,6 @@ void UIRenderer::DrawNavigator(ID2D1DeviceContext* dc) {
         int minimapIdx = (slot == PaneSlot::Left) ? 1 : 0;
         
         auto& minimap = AppContext::GetInstance().Minimaps[minimapIdx];
-        if (minimap.closedByUser) continue;
         
         auto& pane = GetPaneContext(slot);
         if (!pane.resource) continue;
@@ -5913,14 +5912,19 @@ void UIRenderer::DrawNavigator(ID2D1DeviceContext* dc) {
         const float scaledW = orientedSize.width * totalScale;
         const float scaledH = orientedSize.height * totalScale;
         
+        bool isOverflow = (scaledW > vpW + 1.0f || scaledH > vpH + 1.0f);
         bool shouldShow = false;
-        if (g_config.ShowNavigator == 0) {
-            if (scaledW > vpW * 1.5f || scaledH > vpH * 1.5f) {
+        if (isOverflow) {
+            if (minimap.overrideState == MinimapOverride::Show) {
                 shouldShow = true;
-            }
-        } else if (g_config.ShowNavigator == 1) {
-            if (scaledW > vpW + 1.0f || scaledH > vpH + 1.0f) {
-                shouldShow = true;
+            } else if (minimap.overrideState == MinimapOverride::Hide) {
+                shouldShow = false;
+            } else {
+                if (g_config.ShowNavigator == 0) {
+                    shouldShow = (scaledW > vpW * 1.5f || scaledH > vpH * 1.5f);
+                } else if (g_config.ShowNavigator == 1) {
+                    shouldShow = true;
+                }
             }
         }
         
