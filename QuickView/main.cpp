@@ -4737,9 +4737,9 @@ void LoadConfig() {
     GetPrivateProfileStringW(L"Controls", L"RightDragZoomSpeed", L"1.0", buf, 64, iniPath.c_str());
     g_config.RightDragZoomSpeed = std::clamp((float)_wtof(buf), 0.1f, 3.0f);
     GetPrivateProfileStringW(L"Controls", L"PanStepNormal", L"20.0", buf, 64, iniPath.c_str());
-    g_config.PanStepNormal = std::clamp((float)_wtof(buf), 1.0f, 100.0f);
+    g_config.PanStepNormal = std::clamp((float)_wtof(buf), 1.0f, 600.0f);
     GetPrivateProfileStringW(L"Controls", L"PanStepFast", L"100.0", buf, 64, iniPath.c_str());
-    g_config.PanStepFast = std::clamp((float)_wtof(buf), 10.0f, 500.0f);
+    g_config.PanStepFast = std::clamp((float)_wtof(buf), 10.0f, 1000.0f);
     g_config.LeftDragAction = (MouseAction)GetPrivateProfileIntW(L"Controls", L"LeftDragAction", (int)MouseAction::WindowDrag, iniPath.c_str());
     g_config.MiddleDragAction = (MouseAction)GetPrivateProfileIntW(L"Controls", L"MiddleDragAction", (int)MouseAction::PanImage, iniPath.c_str());
     g_config.MiddleClickAction = (MouseAction)GetPrivateProfileIntW(L"Controls", L"MiddleClickAction", (int)MouseAction::ExitApp, iniPath.c_str());
