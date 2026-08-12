@@ -13,7 +13,8 @@ if not exist "%SCREENSHOT_DIR%\" (
   exit /b 1
 )
 set "IMAGE="
-for /f "usebackq delims=" %%I in (`powershell.exe -NoLogo -NoProfile -NonInteractive -Command "$e=[IO.Directory]::EnumerateFiles($env:QV_SCREENSHOT_DIR,'*.avif').GetEnumerator(); if($e.MoveNext()){$e.Current}"`) do if not defined IMAGE set "IMAGE=%%I"
+if not "%~1"=="" if exist "%~1" set "IMAGE=%~f1"
+if not defined IMAGE for /f "usebackq delims=" %%I in (`powershell.exe -NoLogo -NoProfile -NonInteractive -Command "$e=[IO.Directory]::EnumerateFiles($env:QV_SCREENSHOT_DIR,'*.avif').GetEnumerator(); if($e.MoveNext()){$e.Current}"`) do if not defined IMAGE set "IMAGE=%%I"
 if not defined IMAGE (
   echo No images found in: "%SCREENSHOT_DIR%"
   exit /b 1
