@@ -1555,7 +1555,25 @@ void ImageEngine::AddToCache(int index, const std::wstring& path, std::shared_pt
     }
     
     // 3. Memory limit check with eviction
-    while (m_currentCacheBytes + newSize > m_prefetchPolicy.maxCacheMemory && !m_lruOrder.empty()) {
+    size_t effectiveCacheLimit = m_prefetchPolicy.maxCacheMemory;
+
+    // Keep a proportional reserve so cache growth responds to actual memory
+    // pressure: 20% of physical RAM, never less than 2 GiB.
+    MEMORYSTATUSEX memory{};
+    memory.dwLength = sizeof(memory);
+    if (GlobalMemoryStatusEx(&memory)) {
+        const uint64_t systemReserve = (std::max)(
+            2ULL * 1024 * 1024 * 1024,
+            memory.ullTotalPhys / 5);
+        const uint64_t growableBytes =
+            memory.ullAvailPhys > systemReserve
+                ? memory.ullAvailPhys - systemReserve
+                : 0;
+        effectiveCacheLimit = static_cast<size_t>((std::min)(
+            static_cast<uint64_t>(effectiveCacheLimit),
+            static_cast<uint64_t>(m_currentCacheBytes) + growableBytes));
+    }
+    while (m_currentCacheBytes + newSize > effectiveCacheLimit && !m_lruOrder.empty()) {
         // Find victim from LRU tail
         std::wstring victimPath = m_lruOrder.back();
         auto vit = m_cache.find(victimPath);
@@ -1588,7 +1606,7 @@ void ImageEngine::AddToCache(int index, const std::wstring& path, std::shared_pt
     
     // 4. Add to cache (ProtectionZone allows exceeding limit)
     // Only add if we have space OR if it's high priority (neighbor).
-    if (m_currentCacheBytes + newSize <= m_prefetchPolicy.maxCacheMemory || abs(index - m_currentViewIndex) <= 1) {
+    if (m_currentCacheBytes + newSize <= effectiveCacheLimit || abs(index - m_currentViewIndex) <= 1) {
         std::shared_ptr<QuickView::RawImageFrame> cachedFrame;
 
         // FastLane and HeavyLane events already own stable heap buffers.

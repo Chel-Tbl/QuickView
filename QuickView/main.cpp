@@ -6175,6 +6175,61 @@ static int RunDecodeWorker(int argc, LPWSTR* argv) {
     return SUCCEEDED(hr) ? 0 : 2;
 }
 
+static int RunDecodeBenchmark(int argc, LPWSTR* argv) {
+    HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
+    std::wstring inputPath;
+    if (!TryReadArgValue(argc, argv, L"--input", &inputPath)) {
+        if (SUCCEEDED(coInitHr)) CoUninitialize();
+        return 2;
+    }
+
+    int iterations = 5;
+    (void)TryReadPositiveIntArg(argc, argv, L"--iterations", &iterations);
+
+    CImageLoader loader;
+    std::vector<double> samples;
+    samples.reserve(iterations);
+    std::wstring loaderName;
+    QuickView::RawImageFrame lastFrame;
+    CImageLoader::ImageMetadata lastMetadata;
+
+    for (int i = 0; i < iterations + 1; ++i) {
+        QuickView::RawImageFrame frame;
+        CImageLoader::ImageMetadata metadata;
+        loaderName.clear();
+        const auto begin = std::chrono::steady_clock::now();
+        const HRESULT hr = loader.LoadToFrame(
+            inputPath.c_str(), &frame, nullptr, 0, 0, &loaderName, {},
+            &metadata, true, false, -1.0f);
+        const double elapsedMs =
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - begin).count();
+        if (FAILED(hr) || !frame.IsValid()) {
+            if (SUCCEEDED(coInitHr)) CoUninitialize();
+            return 3;
+        }
+        if (i > 0) samples.push_back(elapsedMs);
+        lastFrame = std::move(frame);
+        lastMetadata = std::move(metadata);
+    }
+
+    std::sort(samples.begin(), samples.end());
+    const double medianMs = samples[samples.size() / 2];
+    fwprintf(stdout,
+        L"{\"path\":\"%ls\",\"loader\":\"%ls\",\"width\":%d,"
+        L"\"height\":%d,\"bytesPerPixel\":%d,\"hdr\":%s,"
+        L"\"medianMs\":%.3f,\"samples\":%d}\n",
+        inputPath.c_str(), loaderName.c_str(), lastFrame.width,
+        lastFrame.height, lastFrame.GetBytesPerPixel(),
+        lastFrame.hdrMetadata.isHdr ? L"true" : L"false",
+        medianMs, iterations);
+
+    if (SUCCEEDED(coInitHr)) CoUninitialize();
+    return 0;
+}
+
+
 static bool TryRunToolProcessFromCommandLine(int* outExitCode) {
     if (!outExitCode) return false;
 
@@ -6182,12 +6237,13 @@ static bool TryRunToolProcessFromCommandLine(int* outExitCode) {
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!argv) return false;
 
-    enum class ToolMode { None, DecodeWorker, Uninstall };
+    enum class ToolMode { None, DecodeWorker, DecodeBenchmark, Uninstall };
     ToolMode mode = ToolMode::None;
 
     for (int i = 1; i < argc; ++i) {
         if (!argv[i]) continue;
         if (_wcsicmp(argv[i], L"--decode-worker") == 0) { mode = ToolMode::DecodeWorker; break; }
+        if (_wcsicmp(argv[i], L"--decode-benchmark") == 0) { mode = ToolMode::DecodeBenchmark; break; }
         if (_wcsicmp(argv[i], L"--uninstall") == 0) { mode = ToolMode::Uninstall; break; }
     }
 
@@ -6198,6 +6254,7 @@ static bool TryRunToolProcessFromCommandLine(int* outExitCode) {
 
     switch (mode) {
         case ToolMode::DecodeWorker: *outExitCode = RunDecodeWorker(argc, argv); break;
+        case ToolMode::DecodeBenchmark: *outExitCode = RunDecodeBenchmark(argc, argv); break;
         case ToolMode::Uninstall:
             SettingsOverlay::UnregisterAssociations();
             *outExitCode = 0;
@@ -6612,8 +6669,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, [[maybe_unused]] LPWSTR lpCm
                  break;
              case 4: // Ultra
                  policy.enablePrefetch = true;
-                 policy.maxCacheMemory = 2048ULL * 1024 * 1024;
-                 policy.lookAheadCount = 128;
+                 policy.maxCacheMemory = 8ULL * 1024 * 1024 * 1024;
+                 policy.lookAheadCount = 256;
                  break;
          }
          g_imageEngine->SetPrefetchPolicy(policy);

@@ -184,8 +184,8 @@ struct EngineConfig {
             // Ultra: 32GB+
             cfg.detectedTier = Tier::ULTRA;
             cfg.arenaPreallocSize = 512 * 1024 * 1024;   // 512MB per worker
-            cfg.maxCacheMemory = 2ULL * 1024 * 1024 * 1024; // 2GB cache
-            cfg.prefetchLookAhead = 64;
+            cfg.maxCacheMemory = 8ULL * 1024 * 1024 * 1024; // 8GB hard cap; live RAM guard applies
+            cfg.prefetchLookAhead = 256;
             cfg.minHotSpares = 2; // Keep 2 hot spares on high-end
         } 
         else if (info.totalRAM >= 8ULL * 1024 * 1024 * 1024) {

@@ -2440,8 +2440,8 @@ void SettingsOverlay::BuildMenu() {
                      break;
                  case 4: // Ultra
                      policy.enablePrefetch = true;
-                     policy.maxCacheMemory = 2048ULL * 1024 * 1024;
-                     policy.lookAheadCount = 128;
+                     policy.maxCacheMemory = 8ULL * 1024 * 1024 * 1024;
+                     policy.lookAheadCount = 256;
                      break;
              }
              g_pImageEngine->SetPrefetchPolicy(policy);

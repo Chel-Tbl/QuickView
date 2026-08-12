@@ -45,6 +45,25 @@
       }
     },
     {
+      "name": "PGO-Instrumented",
+      "displayName": "PGO Instrumented",
+      "description": "Release-LTO build that records workload profiles.",
+      "inherits": "Release-LTO",
+      "cacheVariables": {
+        "PGO_MODE": "GENERATE"
+      }
+    },
+    {
+      "name": "PGO-Native",
+      "displayName": "PGO Native",
+      "description": "Release-LTO build optimized with the merged local workload profile.",
+      "inherits": "Release-LTO",
+      "cacheVariables": {
+        "PGO_MODE": "USE",
+        "PGO_PROFILE_FILE": "${sourceDir}/out/pgo/QuickView.profdata"
+      }
+    },
+    {
       "name": "base-arm64",
       "hidden": true,
       "inherits": "base",
@@ -80,6 +99,14 @@
     {
       "name": "Release-LTO",
       "configurePreset": "Release-LTO"
+    },
+    {
+      "name": "PGO-Instrumented",
+      "configurePreset": "PGO-Instrumented"
+    },
+    {
+      "name": "PGO-Native",
+      "configurePreset": "PGO-Native"
     }
   ]
 }
