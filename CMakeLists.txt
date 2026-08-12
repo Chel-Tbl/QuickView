@@ -52,6 +52,7 @@ option(ENABLE_LTO  "Enable Link Time Optimization (ThinLTO)" OFF)
 set(PGO_MODE "OFF" CACHE STRING "PGO mode: OFF, GENERATE, or USE")
 set_property(CACHE PGO_MODE PROPERTY STRINGS OFF GENERATE USE)
 set(PGO_PROFILE_FILE "" CACHE FILEPATH "Merged LLVM profile used by PGO_MODE=USE")
+set(NATIVE_CPU OFF CACHE BOOL "Optimize QuickView for the processor running the build")
 
 # ============================================================================
 # Source Files Definition
@@ -202,6 +203,10 @@ if(MSVC OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             /clang:-flto=full /clang:-mllvm /clang:-inline-threshold=250
             /clang:-fwhole-program-vtables /clang:-fvirtual-function-elimination
             /clang:-fno-ident)
+        if(NATIVE_CPU AND CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+            message(STATUS "CPU: enabling -march=native for this local binary")
+            target_compile_options(QuickView PRIVATE /clang:-march=native)
+        endif()
         target_link_options(QuickView PRIVATE /DEBUG /OPT:REF /OPT:ICF /opt:lldlto=3 "/MAP:${CMAKE_BINARY_DIR}/QuickView.map")
 
         if(PGO_MODE STREQUAL "GENERATE")
@@ -214,8 +219,6 @@ if(MSVC OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             endif()
             message(STATUS "PGO: using ${PGO_PROFILE_FILE}")
             target_compile_options(QuickView PRIVATE
-                "/clang:-fprofile-use=${PGO_PROFILE_FILE}")
-            target_link_options(QuickView PRIVATE
                 "-fprofile-use=${PGO_PROFILE_FILE}")
         elseif(NOT PGO_MODE STREQUAL "OFF")
             message(FATAL_ERROR "PGO_MODE must be OFF, GENERATE, or USE")

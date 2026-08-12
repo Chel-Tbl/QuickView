@@ -50,7 +50,8 @@
       "description": "Release-LTO build that records workload profiles.",
       "inherits": "Release-LTO",
       "cacheVariables": {
-        "PGO_MODE": "GENERATE"
+        "PGO_MODE": "GENERATE",
+        "NATIVE_CPU": "ON"
       }
     },
     {
@@ -60,7 +61,8 @@
       "inherits": "Release-LTO",
       "cacheVariables": {
         "PGO_MODE": "USE",
-        "PGO_PROFILE_FILE": "${sourceDir}/out/pgo/QuickView.profdata"
+        "PGO_PROFILE_FILE": "${sourceDir}/out/pgo/QuickView.profdata",
+        "NATIVE_CPU": "ON"
       }
     },
     {
