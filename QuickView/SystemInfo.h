@@ -185,7 +185,7 @@ struct EngineConfig {
             cfg.detectedTier = Tier::ULTRA;
             cfg.arenaPreallocSize = 512 * 1024 * 1024;   // 512MB per worker
             cfg.maxCacheMemory = 2ULL * 1024 * 1024 * 1024; // 2GB cache
-            cfg.prefetchLookAhead = 10;
+            cfg.prefetchLookAhead = 64;
             cfg.minHotSpares = 2; // Keep 2 hot spares on high-end
         } 
         else if (info.totalRAM >= 8ULL * 1024 * 1024 * 1024) {
@@ -193,7 +193,7 @@ struct EngineConfig {
             cfg.detectedTier = Tier::BALANCED;
             cfg.arenaPreallocSize = 256 * 1024 * 1024;   // 256MB per worker
             cfg.maxCacheMemory = 512 * 1024 * 1024;      // 512MB cache
-            cfg.prefetchLookAhead = 3;
+            cfg.prefetchLookAhead = 16;
             cfg.minHotSpares = 1;
         } 
         else {

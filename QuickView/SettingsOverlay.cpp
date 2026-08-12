@@ -2431,17 +2431,17 @@ void SettingsOverlay::BuildMenu() {
                  case 2: // Eco
                      policy.enablePrefetch = true;
                      policy.maxCacheMemory = 128 * 1024 * 1024;
-                     policy.lookAheadCount = 1;
+                     policy.lookAheadCount = 4;
                      break;
                  case 3: // Balanced
                      policy.enablePrefetch = true;
                      policy.maxCacheMemory = 512 * 1024 * 1024;
-                     policy.lookAheadCount = 3;
+                     policy.lookAheadCount = 16;
                      break;
                  case 4: // Ultra
                      policy.enablePrefetch = true;
                      policy.maxCacheMemory = 2048ULL * 1024 * 1024;
-                     policy.lookAheadCount = 10;
+                     policy.lookAheadCount = 128;
                      break;
              }
              g_pImageEngine->SetPrefetchPolicy(policy);

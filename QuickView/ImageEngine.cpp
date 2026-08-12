@@ -794,34 +794,6 @@ std::vector<EngineEvent> ImageEngine::PollState() {
              m_pendingJxlHeavyId = 0; // Consumed
         }
     }
-    // [v9.0] Startup Idle Detection: Enable prefetch after 500ms of continuous system idle
-    if (!m_startupPrefetchAllowed) {
-        if (IsIdle()) {
-            if (!m_startupIdleTracking) {
-                m_startupIdleTracking = true;
-                m_startupIdleBegin = std::chrono::steady_clock::now();
-
-                // Schedule a deferred wakeup so PollState re-enters after 500ms
-                // to check the idle duration (message loop won't fire without events)
-                if (!m_startupWakeupPending.exchange(true)) {
-                    std::thread([this]() {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                        m_startupWakeupPending = false;
-                        QueueEvent(EngineEvent{}); // Wake PollState
-                    }).detach();
-                }
-            } else {
-                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - m_startupIdleBegin).count();
-                if (elapsed >= 500) {
-                    m_startupPrefetchAllowed = true;
-                    QV_LOG("Startup_Idle", TraceLoggingString("PrefetchEnabled", "Action"), TraceLoggingInt32(500, "ThresholdMs"));
-                }
-            }
-        } else {
-            m_startupIdleTracking = false; // Reset: system is still busy
-        }
-    }
 
     // [v9.1] Pump Serial Prefetch Queue
     PumpPrefetch();
@@ -1409,16 +1381,17 @@ void ImageEngine::UpdateView(int currentIndex, QuickView::BrowseDirection dir) {
     m_prefetchQueue.clear();
 
     if (dir == QuickView::BrowseDirection::IDLE) {
-         // [Startup/Reset] Conservative Bidirectional Prefetch
-         int count = (int)m_navigator->Count();
-         if (count > 0) {
-             int nextIdx = (currentIndex + 1) % count;
-             int prevIdx = (currentIndex - 1 + count) % count;
-             
-             // Queue neighbors
-             m_prefetchQueue.push_back({nextIdx, QuickView::Priority::High});
-             m_prefetchQueue.push_back({prevIdx, QuickView::Priority::High});
-         }
+        // Warm both directions before the first input. Alternate sides so
+        // either navigation key starts on a hot frame.
+        const int count = static_cast<int>(m_navigator->Count());
+        const int radius = (std::min)(m_prefetchPolicy.lookAheadCount, count - 1);
+        for (int distance = 1; distance <= radius; ++distance) {
+            const QuickView::Priority priority =
+                (distance == 1) ? QuickView::Priority::High : QuickView::Priority::Idle;
+            m_prefetchQueue.push_back({(currentIndex + distance) % count, priority});
+            m_prefetchQueue.push_back({
+                (currentIndex - distance + count) % count, priority});
+        }
     } else {
          // Directional Prefetch
          int step = (dir == QuickView::BrowseDirection::BACKWARD) ? -1 : 1;
@@ -1454,12 +1427,8 @@ void ImageEngine::ScheduleJob(int index, QuickView::Priority pri) {
         if (m_cache.count(path)) return; // Already cached
     }
     
-    // [v9.0] Strict Startup Delay
-    // If startup prefetch is not allowed yet, BLOCK all non-Critical jobs.
-    // Critical job (Current Image) is allowed always.
-    if (!m_startupPrefetchAllowed && pri != QuickView::Priority::Critical) {
-        return;
-    }
+    // Prefetch jobs enter only after the visible decode drains, so startup
+    // needs no artificial delay.
     
     // [v4.1] Smart Prefetch logic re-enabled (Unified Dispatch Integration)
 
@@ -1618,38 +1587,21 @@ void ImageEngine::AddToCache(int index, const std::wstring& path, std::shared_pt
     }
     
     // 4. Add to cache (ProtectionZone allows exceeding limit)
-    // Only add if we have space OR if it's high priority (neighbor)
-    // If we couldn't evict enough (due to protection), we might exceed limit. That's OK.
+    // Only add if we have space OR if it's high priority (neighbor).
     if (m_currentCacheBytes + newSize <= m_prefetchPolicy.maxCacheMemory || abs(index - m_currentViewIndex) <= 1) {
-        
-        // [v8.13 Fix] DEEP COPY pixel data to heap memory!
-        // The original frame's pixels may point to PMR Arena memory which gets reused.
-        // We must copy the data to independently-owned heap memory for safe caching.
-        auto cachedFrame = std::make_shared<QuickView::RawImageFrame>();
-        
-        if (frame->IsSvg()) {
-            // SVG: Copy the SVG data struct
-            cachedFrame->format = frame->format;
-            cachedFrame->formatDetails = frame->formatDetails;
-            cachedFrame->width = frame->width;
-            cachedFrame->height = frame->height;
-            cachedFrame->svg = std::make_unique<QuickView::RawImageFrame::SvgData>();
-            cachedFrame->svg->xmlData = frame->svg->xmlData; // Vector copy
-            cachedFrame->svg->viewBoxW = frame->svg->viewBoxW;
-            cachedFrame->svg->viewBoxH = frame->svg->viewBoxH;
-            cachedFrame->srcWidth = frame->srcWidth;
-            cachedFrame->srcHeight = frame->srcHeight;
-            
-            // [CMS] Propagate color profile and HDR metadata
-            cachedFrame->iccProfile = frame->iccProfile;
-            cachedFrame->colorInfo = frame->colorInfo;
-            cachedFrame->hdrMetadata = frame->hdrMetadata;
+        std::shared_ptr<QuickView::RawImageFrame> cachedFrame;
+
+        // FastLane and HeavyLane events already own stable heap buffers.
+        // Share those frames instead of copying every decoded image a second
+        // time. Arena-backed frames have no deleter and still require a copy.
+        if (frame->IsSvg() || frame->memoryDeleter) {
+            cachedFrame = std::move(frame);
         } else {
-            // Raster: Deep copy pixels to heap
+            cachedFrame = std::make_shared<QuickView::RawImageFrame>();
             size_t bufferSize = frame->GetBufferSize();
             uint8_t* heapPixels = new uint8_t[bufferSize];
             memcpy(heapPixels, frame->pixels, bufferSize);
-            
+
             cachedFrame->pixels = heapPixels;
             cachedFrame->width = frame->width;
             cachedFrame->height = frame->height;
@@ -1660,37 +1612,20 @@ void ImageEngine::AddToCache(int index, const std::wstring& path, std::shared_pt
             cachedFrame->exifOrientation = frame->exifOrientation;
             cachedFrame->srcWidth = frame->srcWidth;
             cachedFrame->srcHeight = frame->srcHeight;
-            cachedFrame->memoryDeleter = QuickView::MemoryDeleter::FromDeleteArray(); // Heap cleanup
-            
-            // [CMS] Propagate color profile and HDR metadata
+            cachedFrame->memoryDeleter = QuickView::MemoryDeleter::FromDeleteArray();
             cachedFrame->iccProfile = frame->iccProfile;
             cachedFrame->colorInfo = frame->colorInfo;
             cachedFrame->hdrMetadata = frame->hdrMetadata;
-
-            // [GPU Pipeline] Deep copy blend operation and payload
             cachedFrame->blendOp = frame->blendOp;
             cachedFrame->shaderPayload = frame->shaderPayload;
-            if (frame->auxLayer && frame->auxLayer->pixels) {
-                auto safeAux = std::make_unique<QuickView::AuxLayer>();
-                safeAux->width = frame->auxLayer->width;
-                safeAux->height = frame->auxLayer->height;
-                safeAux->stride = frame->auxLayer->stride;
-                safeAux->bytesPerPixel = frame->auxLayer->bytesPerPixel;
-                
-                size_t auxSize = (size_t)safeAux->stride * safeAux->height;
-                uint8_t* auxHeap = new uint8_t[auxSize];
-                memcpy(auxHeap, frame->auxLayer->pixels, auxSize);
-                safeAux->pixels = auxHeap;
-                safeAux->deleter = QuickView::MemoryDeleter::FromDeleteArray();
-                cachedFrame->auxLayer = std::move(safeAux);
-            }
+            if (frame->auxLayer) cachedFrame->auxLayer = frame->auxLayer->Clone();
         }
-        
+
         CacheEntry entry;
-        entry.frame = cachedFrame; // Now owns independent heap memory
+        entry.frame = std::move(cachedFrame);
         entry.sourceIndex = index;
         entry.sizeBytes = newSize;
-        
+
         m_cache[path] = std::move(entry);
         m_lruOrder.push_front(path);
         m_currentCacheBytes += newSize;
@@ -1803,8 +1738,6 @@ void ImageEngine::RequestFullMetadata() {
 // [v9.1] Serial Prefetch Pump
 void ImageEngine::PumpPrefetch() {
     if (m_prefetchQueue.empty()) return;
-    if (!m_startupPrefetchAllowed) return; // Blocked by startup delay
-
     // Process queue until we find work or run out
     while (!m_prefetchQueue.empty()) {
         // Strict Serial Check: Is ANY engine working?
