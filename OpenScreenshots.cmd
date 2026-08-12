@@ -2,7 +2,7 @@
 setlocal
 set "SCREENSHOT_DIR=D:\MovedFromC\Users\BYND\Desktop\screenshot"
 set "QV_SCREENSHOT_DIR=%SCREENSHOT_DIR%"
-set "VIEWER=%~dp0out\build\Release-LTO\QuickView.exe"
+set "VIEWER=%~dp0out\build\PGO-Native\QuickView.exe"
 
 if not exist "%VIEWER%" (
   echo QuickView.exe not found: "%VIEWER%"
