@@ -26,10 +26,21 @@ constexpr UINT WM_NAVIGATOR_DIR_CHANGED = WM_APP + 50;
 using ImageID = size_t;  // 64-bit path hash
 
 // Helper: Compute normalized path hash (case-insensitive for Windows)
-inline ImageID ComputePathHash(const std::wstring& path) {
-    std::wstring normalized = path;
-    std::transform(normalized.begin(), normalized.end(), normalized.begin(), ::towlower);
-    return std::hash<std::wstring>{}(normalized);
+inline ImageID ComputePathHash(std::wstring_view path) noexcept {
+    // Allocation-free case-insensitive FNV-1a. Image IDs are process-local;
+    // they only need to remain stable for the same normalized path.
+    constexpr size_t offset = sizeof(size_t) == 8
+        ? static_cast<size_t>(14695981039346656037ull)
+        : static_cast<size_t>(2166136261u);
+    constexpr size_t prime = sizeof(size_t) == 8
+        ? static_cast<size_t>(1099511628211ull)
+        : static_cast<size_t>(16777619u);
+    size_t hash = offset;
+    for (wchar_t c : path) {
+        hash ^= static_cast<size_t>(std::towlower(c));
+        hash *= prime;
+    }
+    return hash;
 }
 
 class FileNavigator {
@@ -148,6 +159,8 @@ public:
         std::filesystem::file_time_type m;
         std::wstring t; // type (extension)
         std::string exifDate; // EXIF DateTaken
+        ImageID id = 0;
+        size_t explorerRank = (std::numeric_limits<size_t>::max)();
     };
 
     static void SortEntries(std::vector<SortEntry>& entries, int sortOrder, bool sortDesc, const std::wstring& dirPath = L"");

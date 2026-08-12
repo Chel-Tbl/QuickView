@@ -6,6 +6,132 @@
 #include <wrl/client.h>
 
 extern AppConfig g_config;
+namespace {
+
+template <typename Fn>
+void ParallelFor(size_t count, size_t minItemsPerWorker, size_t maxWorkers, Fn&& fn) {
+    if (count == 0) return;
+    const size_t hardwareThreads =
+        (std::max)(1u, std::thread::hardware_concurrency());
+    const size_t usefulWorkers =
+        (count + minItemsPerWorker - 1) / minItemsPerWorker;
+    const size_t workerLimit = maxWorkers == 0 ? hardwareThreads : maxWorkers;
+    const size_t workerCount =
+        (std::max)(size_t{1}, (std::min)({hardwareThreads, workerLimit, usefulWorkers}));
+    if (workerCount == 1) {
+        for (size_t i = 0; i < count; ++i) fn(i);
+        return;
+    }
+
+    constexpr size_t chunkSize = 128;
+    std::atomic<size_t> next{0};
+    auto worker = [&]() {
+        for (;;) {
+            const size_t begin = next.fetch_add(chunkSize, std::memory_order_relaxed);
+            if (begin >= count) return;
+            const size_t end = (std::min)(count, begin + chunkSize);
+            for (size_t i = begin; i < end; ++i) fn(i);
+        }
+    };
+
+    std::vector<std::thread> threads;
+    threads.reserve(workerCount - 1);
+    for (size_t i = 1; i < workerCount; ++i) threads.emplace_back(worker);
+    worker();
+    for (auto& thread : threads) thread.join();
+}
+
+bool IsBrowsableImageExtension(std::wstring_view ext) {
+    if (ext.empty() || QuickView::IsArchiveExtension(ext)) return false;
+    for (const auto supported : QuickView::SUPPORTED_EXTENSIONS) {
+        if (QuickView::ExtEqualsIgnoreCase(ext, supported)) return true;
+    }
+    return false;
+}
+
+bool EnumerateRealDirectoryFast(
+    const std::wstring& directory,
+    int sortOrder,
+    bool needsPairTypes,
+    HANDLE cancelEvent,
+    std::vector<FileNavigator::SortEntry>& entries) {
+    std::wstring prefix = directory;
+    if (!prefix.empty() && prefix.back() != L'\\' && prefix.back() != L'/') {
+        prefix.push_back(L'\\');
+    }
+    const std::wstring searchPattern = prefix + L"*";
+
+    WIN32_FIND_DATAW findData{};
+    HANDLE findHandle = FindFirstFileExW(
+        searchPattern.c_str(), FindExInfoBasic, &findData,
+        FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
+    if (findHandle == INVALID_HANDLE_VALUE && GetLastError() == ERROR_INVALID_PARAMETER) {
+        findHandle = FindFirstFileExW(
+            searchPattern.c_str(), FindExInfoBasic, &findData,
+            FindExSearchNameMatch, nullptr, 0);
+    }
+    if (findHandle == INVALID_HANDLE_VALUE) return false;
+
+    size_t scannedCount = 0;
+    do {
+        if ((++scannedCount & 0xFF) == 0 && cancelEvent &&
+            WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0) {
+            FindClose(findHandle);
+            return false;
+        }
+        if ((findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) continue;
+
+        const std::wstring_view name(findData.cFileName);
+        const std::wstring_view ext = QuickView::ExtensionOf(name);
+        if (!IsBrowsableImageExtension(ext)) continue;
+
+        FileNavigator::SortEntry entry;
+        entry.p.reserve(prefix.size() + name.size());
+        entry.p.assign(prefix);
+        entry.p.append(name);
+        entry.s =
+            (static_cast<uintmax_t>(findData.nFileSizeHigh) << 32) |
+            static_cast<uintmax_t>(findData.nFileSizeLow);
+
+        if (sortOrder == 2) {
+            ULARGE_INTEGER ticks{};
+            ticks.LowPart = findData.ftLastWriteTime.dwLowDateTime;
+            ticks.HighPart = findData.ftLastWriteTime.dwHighDateTime;
+            using FileDuration = std::filesystem::file_time_type::duration;
+            entry.m = std::filesystem::file_time_type(
+                FileDuration(static_cast<FileDuration::rep>(ticks.QuadPart)));
+        }
+        if (sortOrder == 5 || needsPairTypes) {
+            entry.t.assign(ext);
+            std::transform(entry.t.begin(), entry.t.end(), entry.t.begin(),
+                [](wchar_t c) { return QuickView::ToLowerAscii(c); });
+        }
+        entries.push_back(std::move(entry));
+    } while (FindNextFileW(findHandle, &findData));
+    FindClose(findHandle);
+
+    if (sortOrder == 3) {
+        // Date-taken sorting is inherently I/O-heavy. A small bounded pool
+        // overlaps reads without flooding the storage device.
+        ParallelFor(entries.size(), 256, 4, [&](size_t i) {
+            FILE* fp = nullptr;
+            _wfopen_s(&fp, entries[i].p.c_str(), L"rb");
+            if (!fp) return;
+            unsigned char buffer[65536];
+            const size_t bytes = fread(buffer, 1, sizeof(buffer), fp);
+            fclose(fp);
+            if (bytes == 0) return;
+            easyexif::EXIFInfo info;
+            if (info.parseFrom(buffer, static_cast<unsigned>(bytes)) == PARSE_EXIF_SUCCESS) {
+                entries[i].exifDate = std::move(info.DateTimeOriginal);
+            }
+        });
+    }
+    return true;
+}
+
+} // namespace
+
 
 // [Directory Watcher] Custom window message posted when background scan completes
 // defined in header: constexpr UINT WM_NAVIGATOR_DIR_CHANGED = WM_APP + 50;
@@ -86,6 +212,9 @@ void FileNavigator::Initialize(const std::wstring& currentPath, HWND hwnd) {
         return;
     }
 
+    std::vector<SortEntry> entries;
+    bool entriesPrepared = false;
+
     if (QuickView::IsArchiveExtension(pExt)) {
         // Load from Archive VFS
         m_archivePath = p.wstring();
@@ -127,65 +256,34 @@ void FileNavigator::Initialize(const std::wstring& currentPath, HWND hwnd) {
             }
         }
     } else {
-        for (const auto& entry : fs::directory_iterator(dir, ec)) {
-            if (entry.is_regular_file(ec)) {
-                std::wstring ext = entry.path().extension().wstring();
-                std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t c){ return std::towlower(c); });
-
-                // Skip archive container files from the flat folder slideshow playlist
-                bool isArchiveExt = QuickView::IsArchiveExtension(ext);
-                if (isArchiveExt) continue;
-
-                for (const auto& supp : QuickView::SUPPORTED_EXTENSIONS) {
-                    if (ext == supp) {
-                        m_files.push_back(entry.path().wstring());
-                        // Cache file size for Scout Lane decision
-                        m_sizes.push_back(entry.file_size(ec));
-                        break;
-                    }
-                }
-            }
-        }
+        entriesPrepared = EnumerateRealDirectoryFast(
+            dir.wstring(), g_runtime.SortOrder, g_config.PairRawJpeg,
+            nullptr, entries);
+        if (!entriesPrepared) return;
     }
 
     
-    std::vector<SortEntry> entries;
-    entries.reserve(m_files.size());
-    namespace fs2 = std::filesystem;
-    for(size_t i=0; i<m_files.size(); ++i) {
-        SortEntry e;
-        e.p = m_files[i];
-        e.s = m_sizes[i];
-        std::error_code ec2;
-        
-        // For virtual paths, use the archive file's timestamp
-        if (IsVirtualPath(e.p)) {
-            e.m = fs2::last_write_time(p, ec2);
-        } else {
-            e.m = fs2::last_write_time(e.p, ec2);
+    if (!entriesPrepared) {
+        // Archive entries already carry their sizes. Only query the archive's
+        // timestamp when the selected sort mode actually consumes it.
+        entries.reserve(m_files.size());
+        std::filesystem::file_time_type archiveTime{};
+        if (g_runtime.SortOrder == 2) {
+            std::error_code timeError;
+            archiveTime = fs::last_write_time(p, timeError);
         }
-
-        e.t = fs2::path(e.p).extension().wstring();
-        std::transform(e.t.begin(), e.t.end(), e.t.begin(), [](wchar_t c){ return std::towlower(c); });
-
-        // Only parse EXIF date if specifically requested and it's a real file
-        if (g_runtime.SortOrder == 3 && !IsVirtualPath(e.p)) {
-             FILE *fp = nullptr;
-             _wfopen_s(&fp, e.p.c_str(), L"rb");
-             if (fp) {
-                 unsigned char buf[65536];
-                 size_t bytes = fread(buf, 1, sizeof(buf), fp);
-                 fclose(fp);
-                 if (bytes > 0) {
-                     easyexif::EXIFInfo info;
-                     if (info.parseFrom(buf, (unsigned)bytes) == PARSE_EXIF_SUCCESS) {
-                         e.exifDate = info.DateTimeOriginal;
-                     }
-                 }
-             }
+        for (size_t i = 0; i < m_files.size(); ++i) {
+            SortEntry entry;
+            entry.p = std::move(m_files[i]);
+            entry.s = m_sizes[i];
+            if (g_runtime.SortOrder == 2) entry.m = archiveTime;
+            if (g_runtime.SortOrder == 5) {
+                entry.t.assign(QuickView::ExtensionOf(entry.p));
+                std::transform(entry.t.begin(), entry.t.end(), entry.t.begin(),
+                    [](wchar_t c) { return QuickView::ToLowerAscii(c); });
+            }
+            entries.push_back(std::move(entry));
         }
-
-        entries.push_back(e);
     }
     
     int sortOrder = g_runtime.SortOrder;
@@ -210,20 +308,19 @@ void FileNavigator::Initialize(const std::wstring& currentPath, HWND hwnd) {
         ApplyRawJpegPairing(entries, m_pairedRaws, skip.empty() ? nullptr : &skip);
     }
 
-    // Write back
-    m_files.clear();
-    m_sizes.clear();
-    for(const auto& e : entries) {
-        m_files.push_back(e.p);
-        m_sizes.push_back(e.s);
+    // Move the sorted playlist into its compact runtime arrays, then hash
+    // independent paths concurrently. No frame or path is copied here.
+    m_files.resize(entries.size());
+    m_sizes.resize(entries.size());
+    for (size_t i = 0; i < entries.size(); ++i) {
+        m_files[i] = std::move(entries[i].p);
+        m_sizes[i] = entries[i].s;
     }
-    
-    // [ImageID] Compute stable hash IDs for all files
-    m_ids.clear();
-    m_ids.reserve(m_files.size());
-    for (const auto& f : m_files) {
-        m_ids.push_back(ComputePathHash(f));
-    }
+
+    m_ids.resize(m_files.size());
+    ParallelFor(m_files.size(), 2048, 0, [&](size_t i) {
+        m_ids[i] = ComputePathHash(m_files[i]);
+    });
 
 
     // Find current index
@@ -900,24 +997,30 @@ void FileNavigator::SortEntries(std::vector<SortEntry>& entries, int sortOrder, 
     if (sortOrder == 0 && !dirPath.empty()) {
         explorerOrder = GetExplorerWindowFileOrder(dirPath);
     }
+    if (!explorerOrder.empty()) {
+        ParallelFor(entries.size(), 2048, 0, [&](size_t i) {
+            entries[i].id = ComputePathHash(entries[i].p);
+            const auto order = explorerOrder.find(entries[i].id);
+            if (order != explorerOrder.end()) entries[i].explorerRank = order->second;
+        });
+    }
 
-    std::sort(entries.begin(), entries.end(), [sortOrder, sortDesc, &getSortNamePtr, &explorerOrder](const SortEntry& a, const SortEntry& b){
+
+    auto less = [sortOrder, sortDesc, &getSortNamePtr, hasExplorerOrder = !explorerOrder.empty()](const SortEntry& a, const SortEntry& b) {
         int cmp = 0;
         LPCWSTR nameA = getSortNamePtr(a.p);
         LPCWSTR nameB = getSortNamePtr(b.p);
         switch (sortOrder) {
             case 0: // Auto (Explorer Order)
-                if (!explorerOrder.empty()) {
-                    ImageID idA = ComputePathHash(a.p);
-                    ImageID idB = ComputePathHash(b.p);
-                    auto itA = explorerOrder.find(idA);
-                    auto itB = explorerOrder.find(idB);
-                    if (itA != explorerOrder.end() && itB != explorerOrder.end()) {
-                        if (itA->second < itB->second) cmp = -1;
-                        else if (itA->second > itB->second) cmp = 1;
-                    } else if (itA != explorerOrder.end()) {
+                if (hasExplorerOrder) {
+                    const bool hasA = a.explorerRank != (std::numeric_limits<size_t>::max)();
+                    const bool hasB = b.explorerRank != (std::numeric_limits<size_t>::max)();
+                    if (hasA && hasB) {
+                        if (a.explorerRank < b.explorerRank) cmp = -1;
+                        else if (a.explorerRank > b.explorerRank) cmp = 1;
+                    } else if (hasA) {
                         cmp = -1;
-                    } else if (itB != explorerOrder.end()) {
+                    } else if (hasB) {
                         cmp = 1;
                     } else {
                         cmp = StrCmpLogicalW(nameA, nameB);
@@ -931,10 +1034,10 @@ void FileNavigator::SortEntries(std::vector<SortEntry>& entries, int sortOrder, 
             case 2: // Modified
                 if (a.m < b.m) cmp = -1;
                 else if (a.m > b.m) cmp = 1;
-                else cmp = StrCmpLogicalW(nameA, nameB); // Fallback
+                else cmp = StrCmpLogicalW(nameA, nameB);
                 break;
             case 3: // Date Taken
-                if (a.exifDate.empty() && !b.exifDate.empty()) cmp = 1; // Empty goes last
+                if (a.exifDate.empty() && !b.exifDate.empty()) cmp = 1;
                 else if (!a.exifDate.empty() && b.exifDate.empty()) cmp = -1;
                 else {
                     cmp = a.exifDate.compare(b.exifDate);
@@ -951,10 +1054,37 @@ void FileNavigator::SortEntries(std::vector<SortEntry>& entries, int sortOrder, 
                 if (cmp == 0) cmp = StrCmpLogicalW(nameA, nameB);
                 break;
         }
+        return sortDesc ? cmp > 0 : cmp < 0;
+    };
 
-        if (sortDesc) return cmp > 0;
-        return cmp < 0;
+    // Sorting is CPU-bound once directory metadata has been collected. Split
+    // large playlists into sorted runs, then merge them in-place by pairs.
+    const size_t hardwareThreads = (std::max)(1u, std::thread::hardware_concurrency());
+    const size_t runCount = entries.size() >= 8192
+        ? (std::min)(static_cast<size_t>(hardwareThreads), entries.size() / 4096)
+        : 1;
+    if (runCount <= 1) {
+        std::sort(entries.begin(), entries.end(), less);
+        return;
+    }
+
+    std::vector<size_t> bounds(runCount + 1);
+    for (size_t i = 0; i <= runCount; ++i) {
+        bounds[i] = entries.size() * i / runCount;
+    }
+    ParallelFor(runCount, 1, runCount, [&](size_t i) {
+        std::sort(entries.begin() + bounds[i], entries.begin() + bounds[i + 1], less);
     });
+    for (size_t width = 1; width < runCount; width *= 2) {
+        for (size_t i = 0; i + width < runCount; i += width * 2) {
+            const size_t right = (std::min)(i + width * 2, runCount);
+            std::inplace_merge(
+                entries.begin() + bounds[i],
+                entries.begin() + bounds[i + width],
+                entries.begin() + bounds[right],
+                less);
+        }
+    }
 }
 
 std::wstring_view FileNavigator::GetPhysicalHostPath(std::wstring_view vfsPath) {
@@ -1065,73 +1195,17 @@ std::wstring FileNavigator::FindAdjacentFolderImage(bool next) {
 
 FileNavigator::DirectoryScanResult FileNavigator::PerformDirectoryScan() {
     DirectoryScanResult result;
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    
-    size_t scannedCount = 0;
-    for (const auto& entry : fs::directory_iterator(m_watchedDir, ec)) {
-        if ((++scannedCount & 0xFF) == 0 && m_hCancelEvent &&
-            WaitForSingleObject(m_hCancelEvent, 0) == WAIT_OBJECT_0) {
-            return {};
-        }
-        if (entry.is_regular_file(ec)) {
-            std::wstring ext = entry.path().extension().wstring();
-            std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t c){ return std::towlower(c); });
-
-            // Skip archive container files from the flat folder slideshow playlist
-            bool isArchiveExt = QuickView::IsArchiveExtension(ext);
-            if (isArchiveExt) continue;
-
-            for (const auto& supp : QuickView::SUPPORTED_EXTENSIONS) {
-                if (ext == supp) {
-                    result.files.push_back(entry.path().wstring());
-                    result.sizes.push_back(entry.file_size(ec));
-                    break;
-                }
-            }
-        }
-    }
-    if (m_hCancelEvent && WaitForSingleObject(m_hCancelEvent, 0) == WAIT_OBJECT_0) {
-        return {};
-    }
-
-    // Sort (same logic as Initialize, but without VFS virtual path handling)
+    const int sortOrder = g_runtime.SortOrder;
+    const bool sortDesc = g_runtime.SortDescending;
     std::vector<SortEntry> entries;
-    entries.reserve(result.files.size());
-    for (size_t i = 0; i < result.files.size(); ++i) {
-        SortEntry e;
-        e.p = result.files[i];
-        e.s = result.sizes[i];
-        std::error_code ec2;
-        e.m = fs::last_write_time(e.p, ec2);
-        e.t = fs::path(e.p).extension().wstring();
-        std::transform(e.t.begin(), e.t.end(), e.t.begin(), [](wchar_t c){ return std::towlower(c); });
-
-        int sortOrder = g_runtime.SortOrder;
-        if (sortOrder == 3) {
-            FILE* fp = nullptr;
-            _wfopen_s(&fp, e.p.c_str(), L"rb");
-            if (fp) {
-                unsigned char buf[65536];
-                size_t bytes = fread(buf, 1, sizeof(buf), fp);
-                fclose(fp);
-                if (bytes > 0) {
-                    easyexif::EXIFInfo info;
-                    if (info.parseFrom(buf, (unsigned)bytes) == PARSE_EXIF_SUCCESS) {
-                        e.exifDate = info.DateTimeOriginal;
-                    }
-                }
-            }
-        }
-
-        entries.push_back(e);
+    if (!EnumerateRealDirectoryFast(
+            m_watchedDir, sortOrder, g_config.PairRawJpeg,
+            m_hCancelEvent, entries)) {
+        return {};
     }
     if (m_hCancelEvent && WaitForSingleObject(m_hCancelEvent, 0) == WAIT_OBJECT_0) {
         return {};
     }
-
-    int sortOrder = g_runtime.SortOrder;
-    bool sortDesc = g_runtime.SortDescending;
     SortEntries(entries, sortOrder, sortDesc, m_watchedDir);
 
     // [RAW+JPEG Pairing] Same fold as Initialize (watcher rescan path)
@@ -1144,16 +1218,17 @@ FileNavigator::DirectoryScanResult FileNavigator::PerformDirectoryScan() {
         ApplyRawJpegPairing(entries, result.pairedRaws, skip.empty() ? nullptr : &skip);
     }
 
-    result.files.clear();
-    result.sizes.clear();
-    for (const auto& e : entries) {
-        result.files.push_back(e.p);
-        result.sizes.push_back(e.s);
-    }
-
-    result.ids.reserve(result.files.size());
-    for (const auto& f : result.files) {
-        result.ids.push_back(ComputePathHash(f));
+    result.files.resize(entries.size());
+    result.sizes.resize(entries.size());
+    result.ids.resize(entries.size());
+    ParallelFor(entries.size(), 2048, 0, [&](size_t i) {
+        result.ids[i] = entries[i].id != 0
+            ? entries[i].id
+            : ComputePathHash(entries[i].p);
+    });
+    for (size_t i = 0; i < entries.size(); ++i) {
+        result.files[i] = std::move(entries[i].p);
+        result.sizes[i] = entries[i].s;
     }
 
     return result;

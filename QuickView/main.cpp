@@ -6228,6 +6228,23 @@ static int RunDecodeBenchmark(int argc, LPWSTR* argv) {
     if (SUCCEEDED(coInitHr)) CoUninitialize();
     return 0;
 }
+static int RunScanBenchmark(int argc, LPWSTR* argv) {
+    std::wstring inputPath;
+    if (!TryReadArgValue(argc, argv, L"--input", &inputPath)) return 2;
+
+    const auto begin = std::chrono::steady_clock::now();
+    FileNavigator navigator;
+    navigator.Initialize(inputPath);
+    const double elapsedMs =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - begin).count();
+
+    fwprintf(stdout,
+        L"{\"path\":\"%ls\",\"files\":%zu,\"elapsedMs\":%.3f}\n",
+        inputPath.c_str(), navigator.Count(), elapsedMs);
+    return navigator.Count() > 0 ? 0 : 3;
+}
+
 
 
 static bool TryRunToolProcessFromCommandLine(int* outExitCode) {
@@ -6237,13 +6254,14 @@ static bool TryRunToolProcessFromCommandLine(int* outExitCode) {
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!argv) return false;
 
-    enum class ToolMode { None, DecodeWorker, DecodeBenchmark, RegisterAssociations, Uninstall };
+    enum class ToolMode { None, DecodeWorker, DecodeBenchmark, ScanBenchmark, RegisterAssociations, Uninstall };
     ToolMode mode = ToolMode::None;
 
     for (int i = 1; i < argc; ++i) {
         if (!argv[i]) continue;
         if (_wcsicmp(argv[i], L"--decode-worker") == 0) { mode = ToolMode::DecodeWorker; break; }
         if (_wcsicmp(argv[i], L"--decode-benchmark") == 0) { mode = ToolMode::DecodeBenchmark; break; }
+        if (_wcsicmp(argv[i], L"--scan-benchmark") == 0) { mode = ToolMode::ScanBenchmark; break; }
         if (_wcsicmp(argv[i], L"--uninstall") == 0) { mode = ToolMode::Uninstall; break; }
         if (_wcsicmp(argv[i], L"--register-associations") == 0) { mode = ToolMode::RegisterAssociations; break; }
     }
@@ -6256,6 +6274,7 @@ static bool TryRunToolProcessFromCommandLine(int* outExitCode) {
     switch (mode) {
         case ToolMode::DecodeWorker: *outExitCode = RunDecodeWorker(argc, argv); break;
         case ToolMode::DecodeBenchmark: *outExitCode = RunDecodeBenchmark(argc, argv); break;
+        case ToolMode::ScanBenchmark: *outExitCode = RunScanBenchmark(argc, argv); break;
         case ToolMode::RegisterAssociations:
             *outExitCode = SettingsOverlay::RegisterAssociations(false) ? 0 : 1;
             break;
