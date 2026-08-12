@@ -394,7 +394,7 @@ static LONG SafeRegSetString(HKEY hRoot, const wchar_t* subKey, const wchar_t* v
 }
 
 // Register file associations (silent, no MessageBox)
-bool SettingsOverlay::RegisterAssociations() {
+bool SettingsOverlay::RegisterAssociations(bool persistConfig) {
     wchar_t exePath[MAX_PATH];
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     std::wstring exePathStr = exePath;
@@ -403,8 +403,9 @@ bool SettingsOverlay::RegisterAssociations() {
     LONG r;
     
     // 1. Register ProgID command
-    std::wstring cmd = L"\"" + exePathStr + L"\" \"%1\"";
+    std::wstring cmd = L"\"" + exePathStr + L"\" --shell-open \"%1\"";
     SafeRegSetString(HKEY_CURRENT_USER, L"Software\\Classes\\QuickView.Image\\shell\\open\\command", NULL, cmd);
+    SafeRegSetString(HKEY_CURRENT_USER, L"Software\\Classes\\QuickView.Image\\shell\\open", L"MultiSelectModel", L"Player");
     
     // 2. Register DefaultIcon
     std::wstring icon = exePathStr + L",0";
@@ -430,8 +431,9 @@ bool SettingsOverlay::RegisterAssociations() {
         SafeRegSetString(HKEY_CURRENT_USER, (L"Software\\Classes\\" + progId).c_str(), L"FriendlyTypeName", desc);
         
         // Command
-        std::wstring cmd = L"\"" + exePathStr + L"\" \"%1\"";
+        std::wstring cmd = L"\"" + exePathStr + L"\" --shell-open \"%1\"";
         SafeRegSetString(HKEY_CURRENT_USER, (L"Software\\Classes\\" + progId + L"\\shell\\open\\command").c_str(), NULL, cmd);
+        SafeRegSetString(HKEY_CURRENT_USER, (L"Software\\Classes\\" + progId + L"\\shell\\open").c_str(), L"MultiSelectModel", L"Player");
         
         // Icon
         std::wstring icon = exePathStr + L",0";
@@ -466,8 +468,9 @@ bool SettingsOverlay::RegisterAssociations() {
         RegCloseKey(hKey);
     }
 
-    std::wstring applicationsCmd = L"\"" + exePathStr + L"\" \"%1\"";
+    std::wstring applicationsCmd = L"\"" + exePathStr + L"\" --shell-open \"%1\"";
     SafeRegSetString(HKEY_CURRENT_USER, L"Software\\Classes\\Applications\\QuickView.exe\\shell\\open\\command", NULL, applicationsCmd);
+    SafeRegSetString(HKEY_CURRENT_USER, L"Software\\Classes\\Applications\\QuickView.exe\\shell\\open", L"MultiSelectModel", L"Player");
     
     // 6. Register Capabilities
     SafeRegSetString(HKEY_CURRENT_USER, L"Software\\QuickView\\Capabilities", L"ApplicationDescription", L"QuickView Image Viewer");
@@ -489,12 +492,13 @@ bool SettingsOverlay::RegisterAssociations() {
     // 8. Refresh Shell
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL);
 
-    // [The Golden Path] Persistence Update
-    g_config.LastRegisteredVersion = SettingsOverlay::GetAppVersion();
-    g_config.LastRegisteredPath = exePathStr;
-    
-    extern void SaveConfig();
-    SaveConfig();
+    if (persistConfig) {
+        g_config.LastRegisteredVersion = SettingsOverlay::GetAppVersion();
+        g_config.LastRegisteredPath = exePathStr;
+
+        extern void SaveConfig();
+        SaveConfig();
+    }
 
     return true;
 }
@@ -556,6 +560,14 @@ bool SettingsOverlay::IsRegistrationNeeded() {
         return true; 
     }
     RegCloseKey(hKeyTest);
+    if (!IsRegistryValueMatch(
+            HKEY_CURRENT_USER,
+            L"Software\\Classes\\Applications\\QuickView.exe\\shell\\open",
+            L"MultiSelectModel",
+            L"Player")) {
+        return true;
+    }
+
 
     return regPath.empty() || (_wcsicmp(regPath.c_str(), currentExe) != 0);
 }

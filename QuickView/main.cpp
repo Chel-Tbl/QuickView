@@ -6237,7 +6237,7 @@ static bool TryRunToolProcessFromCommandLine(int* outExitCode) {
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!argv) return false;
 
-    enum class ToolMode { None, DecodeWorker, DecodeBenchmark, Uninstall };
+    enum class ToolMode { None, DecodeWorker, DecodeBenchmark, RegisterAssociations, Uninstall };
     ToolMode mode = ToolMode::None;
 
     for (int i = 1; i < argc; ++i) {
@@ -6245,6 +6245,7 @@ static bool TryRunToolProcessFromCommandLine(int* outExitCode) {
         if (_wcsicmp(argv[i], L"--decode-worker") == 0) { mode = ToolMode::DecodeWorker; break; }
         if (_wcsicmp(argv[i], L"--decode-benchmark") == 0) { mode = ToolMode::DecodeBenchmark; break; }
         if (_wcsicmp(argv[i], L"--uninstall") == 0) { mode = ToolMode::Uninstall; break; }
+        if (_wcsicmp(argv[i], L"--register-associations") == 0) { mode = ToolMode::RegisterAssociations; break; }
     }
 
     if (mode == ToolMode::None) {
@@ -6255,6 +6256,9 @@ static bool TryRunToolProcessFromCommandLine(int* outExitCode) {
     switch (mode) {
         case ToolMode::DecodeWorker: *outExitCode = RunDecodeWorker(argc, argv); break;
         case ToolMode::DecodeBenchmark: *outExitCode = RunDecodeBenchmark(argc, argv); break;
+        case ToolMode::RegisterAssociations:
+            *outExitCode = SettingsOverlay::RegisterAssociations(false) ? 0 : 1;
+            break;
         case ToolMode::Uninstall:
             SettingsOverlay::UnregisterAssociations();
             *outExitCode = 0;
@@ -6441,6 +6445,34 @@ static void TryCleanupOldVersion(int argc, LPWSTR* argv) {
 HCURSOR g_currentCursor = nullptr;
 int g_initialCmdShow = SW_SHOW;
 
+static bool ClaimShellOpenBatch(int argc, LPWSTR* argv) {
+    bool isShellOpen = false;
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i] && _wcsicmp(argv[i], L"--shell-open") == 0) {
+            isShellOpen = true;
+            break;
+        }
+    }
+    if (!isShellOpen) return true;
+
+    // A legacy Explorer multi-select verb invokes the command once per file.
+    // Keep the first request and discard the rest of the same launch burst:
+    // the viewer already builds the complete containing-folder playlist.
+    HANDLE batchGate = CreateEventW(
+        nullptr, TRUE, FALSE, L"Local\\QuickView_ShellOpenBatch_v1");
+    if (!batchGate) return true;
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        CloseHandle(batchGate);
+        return false;
+    }
+
+    std::thread([batchGate]() {
+        Sleep(1500);
+        CloseHandle(batchGate);
+    }).detach();
+    return true;
+}
+
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, [[maybe_unused]] LPWSTR lpCmdLine, int nCmdShow) {
     // Early capture of foreground window before any QuickView initialization/window creation
     HWND hCmdFg = QuickView::ProcessRouter::ParseFgCaller();
@@ -6463,6 +6495,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, [[maybe_unused]] LPWSTR lpCm
     if (argv && argc > 1) {
         TryCleanupOldVersion(argc, argv);
     }
+    if (argv && !ClaimShellOpenBatch(argc, argv)) {
+        LocalFree(argv);
+        return 0;
+    }
+
 
     int toolExitCode = 0;
     if (TryRunToolProcessFromCommandLine(&toolExitCode)) {

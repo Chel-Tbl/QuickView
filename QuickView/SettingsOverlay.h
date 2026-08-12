@@ -140,7 +140,7 @@ public:
     void ShowUpdateToast(const std::wstring& version, const std::wstring& changelog);
     bool IsUpdateToastVisible() const { return m_showUpdateToast; } 
 
-    static bool RegisterAssociations();
+    static bool RegisterAssociations(bool persistConfig = true);
     static void UnregisterAssociations(); 
     static bool IsRegistrationNeeded();
     static std::wstring GetAppVersion();
