@@ -62,6 +62,29 @@ void FileNavigator::Initialize(const std::wstring& currentPath, HWND hwnd) {
     // VFS Support for Archives
     std::wstring pExt = p.extension().wstring();
     std::transform(pExt.begin(), pExt.end(), pExt.begin(), [](wchar_t c){ return std::towlower(c); });
+    // Opening a normal image must not wait for a full sibling scan. Seed the
+    // navigator with the requested file so decoding can start immediately;
+    // the existing watcher thread builds and publishes the complete playlist.
+    // Keep RAW/rendered camera pairs synchronous because resolving the visible
+    // half is part of their open contract.
+    const bool needsPairResolution =
+        g_config.PairRawJpeg &&
+        (QuickView::IsRawExtension(pExt) || QuickView::IsRenderedPairExtension(pExt));
+    const bool canScanAfterOpen =
+        m_hwnd && !isDirectory && !isVfsInput &&
+        !QuickView::IsArchiveExtension(pExt) && !needsPairResolution;
+    if (canScanAfterOpen) {
+        const std::wstring currentFull = p.wstring();
+        std::error_code sizeEc;
+        m_files.push_back(currentFull);
+        m_sizes.push_back(fs::file_size(p, sizeEc));
+        m_ids.clear();
+        m_ids.push_back(ComputePathHash(currentFull));
+        m_pairedRaws.clear();
+        m_currentIndex = 0;
+        StartDirectoryWatcher(dir.wstring(), true);
+        return;
+    }
 
     if (QuickView::IsArchiveExtension(pExt)) {
         // Load from Archive VFS
@@ -1045,7 +1068,12 @@ FileNavigator::DirectoryScanResult FileNavigator::PerformDirectoryScan() {
     namespace fs = std::filesystem;
     std::error_code ec;
     
+    size_t scannedCount = 0;
     for (const auto& entry : fs::directory_iterator(m_watchedDir, ec)) {
+        if ((++scannedCount & 0xFF) == 0 && m_hCancelEvent &&
+            WaitForSingleObject(m_hCancelEvent, 0) == WAIT_OBJECT_0) {
+            return {};
+        }
         if (entry.is_regular_file(ec)) {
             std::wstring ext = entry.path().extension().wstring();
             std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t c){ return std::towlower(c); });
@@ -1062,6 +1090,9 @@ FileNavigator::DirectoryScanResult FileNavigator::PerformDirectoryScan() {
                 }
             }
         }
+    }
+    if (m_hCancelEvent && WaitForSingleObject(m_hCancelEvent, 0) == WAIT_OBJECT_0) {
+        return {};
     }
 
     // Sort (same logic as Initialize, but without VFS virtual path handling)
@@ -1095,6 +1126,9 @@ FileNavigator::DirectoryScanResult FileNavigator::PerformDirectoryScan() {
 
         entries.push_back(e);
     }
+    if (m_hCancelEvent && WaitForSingleObject(m_hCancelEvent, 0) == WAIT_OBJECT_0) {
+        return {};
+    }
 
     int sortOrder = g_runtime.SortOrder;
     bool sortDesc = g_runtime.SortDescending;
@@ -1125,7 +1159,7 @@ FileNavigator::DirectoryScanResult FileNavigator::PerformDirectoryScan() {
     return result;
 }
 
-void FileNavigator::WatcherThreadProc() {
+void FileNavigator::WatcherThreadProc(bool scanImmediately) {
     HANDLE hNotify = FindFirstChangeNotificationW(
         m_watchedDir.c_str(),
         FALSE,                          // Non-recursive (current directory only)
@@ -1134,6 +1168,23 @@ void FileNavigator::WatcherThreadProc() {
     if (hNotify == INVALID_HANDLE_VALUE) return;
 
     HANDLE handles[2] = { hNotify, m_hCancelEvent };
+    auto publishScan = [this]() {
+        auto scanResult = PerformDirectoryScan();
+        if (m_hCancelEvent && WaitForSingleObject(m_hCancelEvent, 0) == WAIT_OBJECT_0) {
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_scanResultMutex);
+            m_pendingScanResult = std::move(scanResult);
+        }
+        PostMessageW(m_hwnd, WM_NAVIGATOR_DIR_CHANGED, 0, 0);
+        return true;
+    };
+
+    if (scanImmediately && !publishScan()) {
+        FindCloseChangeNotification(hNotify);
+        return;
+    }
 
     while (true) {
         DWORD wait = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
@@ -1156,14 +1207,8 @@ void FileNavigator::WatcherThreadProc() {
         }
         if (cancelled) break;
 
-        // === Background Scan (on this thread, zero UI impact) ===
-        auto scanResult = PerformDirectoryScan();
-
-        {
-            std::lock_guard<std::mutex> lock(m_scanResultMutex);
-            m_pendingScanResult = std::move(scanResult);
-        }
-        PostMessageW(m_hwnd, WM_NAVIGATOR_DIR_CHANGED, 0, 0);
+        // Background scan (on this thread, zero UI impact).
+        if (!publishScan()) break;
 
         // Re-arm for next batch of changes
         if (!FindNextChangeNotification(hNotify)) break; // Directory gone
@@ -1172,14 +1217,14 @@ void FileNavigator::WatcherThreadProc() {
     FindCloseChangeNotification(hNotify);
 }
 
-void FileNavigator::StartDirectoryWatcher(const std::wstring& dirPath) {
+void FileNavigator::StartDirectoryWatcher(const std::wstring& dirPath, bool scanImmediately) {
     m_watchedDir = dirPath;
 
     // Create manual-reset event (initially non-signaled) for graceful shutdown
     m_hCancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!m_hCancelEvent) return;
 
-    m_watcherThread = std::thread(&FileNavigator::WatcherThreadProc, this);
+    m_watcherThread = std::thread(&FileNavigator::WatcherThreadProc, this, scanImmediately);
 }
 
 void FileNavigator::StopDirectoryWatcher() {

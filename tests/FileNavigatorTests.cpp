@@ -747,6 +747,54 @@ TEST(FileNavigatorTest, SortArchivesByNameAscendingOverride) {
     g_runtime.SortDescending = oldSortDescending;
 }
 
+TEST(FileNavigatorTest, DirectImageOpenPublishesSiblingPlaylistAsynchronously) {
+    namespace fs = std::filesystem;
+    const int oldSortOrder = g_runtime.SortOrder;
+    const bool oldSortDescending = g_runtime.SortDescending;
+    const bool oldPairRawJpeg = g_config.PairRawJpeg;
+    g_runtime.SortOrder = 1;
+    g_runtime.SortDescending = false;
+    g_config.PairRawJpeg = false;
+
+    const fs::path tempDir = fs::current_path() / "test_async_open_dir";
+    std::error_code ec;
+    fs::remove_all(tempDir, ec);
+    fs::create_directory(tempDir, ec);
+    ASSERT_FALSE(ec);
+
+    const fs::path selected = tempDir / "image002.avif";
+    std::ofstream(tempDir / "image001.avif").put('\0');
+    std::ofstream(selected).put('\0');
+    std::ofstream(tempDir / "image003.avif").put('\0');
+
+    {
+        FileNavigator nav;
+        nav.Initialize(selected.wstring(), reinterpret_cast<HWND>(1));
+
+        ASSERT_EQ(nav.Count(), 1u);
+        EXPECT_EQ(nav.Index(), 0);
+        EXPECT_EQ(nav.GetFile(0), selected.wstring());
+
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (nav.Count() == 1 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            nav.ApplyPendingScanResult();
+        }
+
+        ASSERT_EQ(nav.Count(), 3u);
+        EXPECT_EQ(nav.Index(), 1);
+        EXPECT_EQ(nav.GetFile(nav.Index()), selected.wstring());
+        EXPECT_EQ(nav.Previous(), (tempDir / "image001.avif").wstring());
+        nav.SetIndex(1);
+        EXPECT_EQ(nav.Next(), (tempDir / "image003.avif").wstring());
+    }
+
+    fs::remove_all(tempDir, ec);
+    g_runtime.SortOrder = oldSortOrder;
+    g_runtime.SortDescending = oldSortDescending;
+    g_config.PairRawJpeg = oldPairRawJpeg;
+}
+
 #include "UndoManager.h"
 
 TEST(UndoManagerTest, PushDeletePairAndPop) {

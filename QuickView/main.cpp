@@ -9078,6 +9078,14 @@ SKIP_EDGE_NAV:;
         size_t oldCount = GetPaneContext(PaneSlot::Primary).navigator.Count();
         GetPaneContext(PaneSlot::Primary).navigator.ApplyPendingScanResult();
         size_t newCount = GetPaneContext(PaneSlot::Primary).navigator.Count();
+        // A direct file open starts with a one-item seed playlist. Once the
+        // background scan installs its siblings, warm both directions without
+        // reloading or replacing the frame already on screen.
+        if (oldCount == 1 && newCount > 1 && g_imageEngine) {
+            g_imageEngine->UpdateView(
+                GetPaneContext(PaneSlot::Primary).navigator.Index(),
+                QuickView::BrowseDirection::IDLE);
+        }
         if (newCount != oldCount) {
             RequestRepaint(PaintLayer::Static | PaintLayer::Dynamic);
             if (g_gallery.IsVisible()) {

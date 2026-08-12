@@ -190,8 +190,8 @@ private:
 
     // [Directory Watcher] Background directory monitoring
     DirectoryScanResult PerformDirectoryScan();
-    void WatcherThreadProc();
-    void StartDirectoryWatcher(const std::wstring& dirPath);
+    void WatcherThreadProc(bool scanImmediately);
+    void StartDirectoryWatcher(const std::wstring& dirPath, bool scanImmediately = false);
     void StopDirectoryWatcher();
 
     // [RAW+JPEG Pairing] Asynchronous capture-time verification of the folded
