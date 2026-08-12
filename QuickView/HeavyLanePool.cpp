@@ -543,7 +543,7 @@ void HeavyLanePool::ShrinkMemory() {
 // Task Submission
 // ============================================================================
 
-void HeavyLanePool::Submit(const std::wstring& path, ImageID imageId, std::shared_ptr<QuickView::MappedFile> mmf, PaneSlot targetSlot, uint64_t generationId) {
+void HeavyLanePool::Submit(const std::wstring& path, ImageID imageId, std::shared_ptr<QuickView::MappedFile> mmf, PaneSlot targetSlot, uint64_t generationId, int priority) {
     // [Hardware] Update IO throttling based on target drive
     bool isSSD = SystemInfo::IsSolidStateDrive(path);
     UpdateIOLimit(isSSD ? m_cap : 2);
@@ -584,7 +584,7 @@ void HeavyLanePool::Submit(const std::wstring& path, ImageID imageId, std::share
     job.mmf = mmf;
     job.targetHdrHeadroomStops = m_targetHdrHeadroomStops.load(std::memory_order_relaxed);
     job.isFullDecode = isFull;
-    job.priority = 200; 
+    job.priority = priority;
     job.genID = m_generationID.load(); // [Smart Pull] Stamp Generation
     
     m_pendingJobs.push_back(job);
@@ -594,7 +594,7 @@ void HeavyLanePool::Submit(const std::wstring& path, ImageID imageId, std::share
     m_poolCv.notify_all(); // [Fix] notify_all required
 }
 
-void HeavyLanePool::SubmitFullDecode(const std::wstring& path, ImageID imageId, std::shared_ptr<QuickView::MappedFile> mmf, PaneSlot targetSlot, uint64_t generationId) {
+void HeavyLanePool::SubmitFullDecode(const std::wstring& path, ImageID imageId, std::shared_ptr<QuickView::MappedFile> mmf, PaneSlot targetSlot, uint64_t generationId, int priority) {
     std::lock_guard lock(m_poolMutex);
     
     JobInfo job;
@@ -607,7 +607,7 @@ void HeavyLanePool::SubmitFullDecode(const std::wstring& path, ImageID imageId, 
     job.mmf = mmf; 
     job.targetHdrHeadroomStops = m_targetHdrHeadroomStops.load(std::memory_order_relaxed);
     job.isFullDecode = true; 
-    job.priority = 150; 
+    job.priority = priority;
     job.genID = m_generationID.load();
     
     m_pendingJobs.push_back(job);
@@ -739,14 +739,16 @@ void HeavyLanePool::SubmitTileBatch(const std::wstring& path, ImageID imageId, s
 // Cancellation
 // ============================================================================
 
-void HeavyLanePool::CancelOthers(ImageID currentId, PaneSlot targetSlot) {
+void HeavyLanePool::CancelOthers(ImageID currentId, PaneSlot targetSlot, const std::vector<ImageID>& protectedIds) {
     std::lock_guard lock(m_poolMutex);
     
 // 1. Clear Job Queue of non-matching IDs
     auto it = m_pendingJobs.begin();
     int removedTiles = 0;
     while (it != m_pendingJobs.end()) {
-        if (it->targetSlot == targetSlot && it->imageId != currentId) {
+        const bool protectedJob =
+            std::find(protectedIds.begin(), protectedIds.end(), it->imageId) != protectedIds.end();
+        if (it->targetSlot == targetSlot && it->imageId != currentId && !protectedJob) {
             if (it->type == JobType::Tile) {
                 removedTiles++;
                 // [Dedup] Remove from in-flight set
@@ -762,7 +764,9 @@ void HeavyLanePool::CancelOthers(ImageID currentId, PaneSlot targetSlot) {
     
     // 2. Stop BUSY workers working on old IDs
     for (auto& w : m_workers) {
-        if (w.state == WorkerState::BUSY && w.currentId != currentId) {
+        const bool protectedJob =
+            std::find(protectedIds.begin(), protectedIds.end(), w.currentId) != protectedIds.end();
+        if (w.state == WorkerState::BUSY && w.currentId != currentId && !protectedJob) {
             w.stopSource.request_stop();
             // [Phase 4.1] Kill any active subprocess for this worker immediately
             if (w.activeWorkerProcess) {

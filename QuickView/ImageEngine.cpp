@@ -287,7 +287,8 @@ void ImageEngine::DispatchImageLoad(const std::wstring& path, ImageID imageId, u
     // [Prefetch System] Cache Check ...
     // If the image is already in memory (from prefetch), use it immediately!
     {
-        auto cachedFrame = GetCachedImage(path);
+        CImageLoader::ImageMetadata cachedMetadata;
+        auto cachedFrame = GetCachedImage(path, &cachedMetadata);
 
         // Guard: do not reuse JXL placeholder/scaled cache as a final hit.
         // Large JXL revisit must re-enter decode pipeline to ensure proper tile activation.
@@ -349,31 +350,31 @@ void ImageEngine::DispatchImageLoad(const std::wstring& path, ImageID imageId, u
                 e.generationId = generationId;
                 e.rawFrame = cachedFrame; // Zero-copy shared_ptr
                 
-                // [Fix - Bug 7] Re-populate metadata from cache
-                // Never trust info.width directly, this causes dimension downgrade 
-                // on cache hit for RAW/TIFFs with tiny IFD thumbs!
-                // [v10.1] Titan Fix: Prefer srcWidth/srcHeight (original resolution) over width/height (scaled preview)
-                e.metadata.Width = (cachedFrame->srcWidth > 0) ? cachedFrame->srcWidth : cachedFrame->width;
-                e.metadata.Height = (cachedFrame->srcHeight > 0) ? cachedFrame->srcHeight : cachedFrame->height;
-                e.metadata.Format = info.format;
-                e.metadata.FileSize = info.fileSize;
-                e.metadata.FormatDetails = cachedFrame->formatDetails;
+                // Metadata and histogram were computed during the original
+                // decode. Reuse them; rescanning 4K pixels here turned every
+                // cache hit into another ~70 ms navigation stall.
+                e.metadata = std::move(cachedMetadata);
+                if (e.metadata.Width == 0) {
+                    e.metadata.Width =
+                        (cachedFrame->srcWidth > 0) ? cachedFrame->srcWidth : cachedFrame->width;
+                }
+                if (e.metadata.Height == 0) {
+                    e.metadata.Height =
+                        (cachedFrame->srcHeight > 0) ? cachedFrame->srcHeight : cachedFrame->height;
+                }
+                if (e.metadata.Format.empty()) e.metadata.Format = info.format;
+                if (e.metadata.FileSize == 0) e.metadata.FileSize = info.fileSize;
+                if (e.metadata.FormatDetails.empty()) {
+                    e.metadata.FormatDetails = cachedFrame->formatDetails;
+                }
                 e.metadata.colorInfo = cachedFrame->colorInfo;
                 e.metadata.hdrMetadata = cachedFrame->hdrMetadata;
                 if (!e.metadata.HasEmbeddedColorProfile.has_value()) {
                     e.metadata.HasEmbeddedColorProfile =
                         cachedFrame->colorInfo.hasEmbeddedIcc || !cachedFrame->iccProfile.empty();
                 }
-                
-                if (cachedFrame->IsSvg()) e.metadata.Format = L"SVG"; 
-
-                // [Fix] Propagate EXIF Orientation from Cache (Critical for Rotation persistence)
+                if (cachedFrame->IsSvg()) e.metadata.Format = L"SVG";
                 e.metadata.ExifOrientation = cachedFrame->exifOrientation;
-                
-                // [Fix] Compute histogram from cached frame to prevent blank histogram on cache hit
-                if (cachedFrame->IsValid() && !cachedFrame->IsSvg()) {
-                    m_loader->ComputeHistogramFromFrame(*cachedFrame, &e.metadata);
-                }
                 
                 QueueEvent(std::move(e)); 
                 
@@ -601,8 +602,18 @@ void ImageEngine::NavigateTo(const std::wstring& path, uintmax_t fileSize, uint6
     ImageID imageId = ComputePathHash(path);
     m_currentImageId.store(imageId);
     m_currentImageIdBySlot[static_cast<int>(targetSlot)].store(imageId);
-    // Cancel stale heavy/tile work immediately for the target pane.
-    m_heavyPool->CancelOthers(imageId, targetSlot);
+    // Keep speculative lookahead decodes alive while cancelling unrelated
+    // stale work. Killing these jobs on every key repeat made prefetch restart
+    // continuously and forced each navigation back onto the decode path.
+    std::vector<ImageID> protectedPrefetchIds;
+    {
+        std::lock_guard lock(m_pendingMutex);
+        protectedPrefetchIds.reserve(m_pendingPaths.size());
+        for (const auto& pendingPath : m_pendingPaths) {
+            protectedPrefetchIds.push_back(ComputePathHash(pendingPath));
+        }
+    }
+    m_heavyPool->CancelOthers(imageId, targetSlot, protectedPrefetchIds);
     
     m_currentNavPath = path;
     m_lastInputTime = std::chrono::steady_clock::now();
@@ -770,7 +781,7 @@ std::vector<EngineEvent> ImageEngine::PollState() {
                 if (m_navigator) {
                     int idx = m_navigator->FindIndex(e.filePath);
                     if (idx != -1) {
-                         AddToCache(idx, e.filePath, e.rawFrame);
+                         AddToCache(idx, e.filePath, e.rawFrame, e.metadata);
                          
                          // [v8.15] Remove from pending set
                          {
@@ -1347,13 +1358,16 @@ int ImageEngine::GetCacheItemCount() const {
     return (int)m_cache.size();
 }
 
-std::shared_ptr<QuickView::RawImageFrame> ImageEngine::GetCachedImage(const std::wstring& path) {
-    std::lock_guard lock(m_cacheMutex); // Thread-safe copy
+std::shared_ptr<QuickView::RawImageFrame> ImageEngine::GetCachedImage(
+    const std::wstring& path,
+    CImageLoader::ImageMetadata* metadata) {
+    std::lock_guard lock(m_cacheMutex);
     auto it = m_cache.find(path);
-    if (it != m_cache.end()) {
-        return it->second.frame; 
+    if (it == m_cache.end()) return nullptr;
+    if (metadata && it->second.hasMetadata) {
+        *metadata = it->second.metadata;
     }
-    return nullptr;
+    return it->second.frame;
 }
 
 void ImageEngine::UpdateView(int currentIndex, QuickView::BrowseDirection dir) {
@@ -1367,17 +1381,14 @@ void ImageEngine::UpdateView(int currentIndex, QuickView::BrowseDirection dir) {
         TraceLoggingInt32(currentIndex, "Index"),
         TraceLoggingInt32(dirInt, "Direction"));
     
-    // 1. Prune: Cancel old tasks not in visible range
+    // Evict stale cache entries, then replace only the desired lookahead
+    // window. Already-running background decodes remain useful and complete;
+    // visible work enters HeavyLane at a higher priority.
     PruneQueue(currentIndex, dir);
-    
-    // ------------------------------------------------------------------------
-    // [v3.1] Cancellation Strategy: Ruthless Purge -> Reschedule
-    // ------------------------------------------------------------------------
     
     // 4. If prefetch disabled, stop here
     if (!m_prefetchPolicy.enablePrefetch) return;
 
-    // [v9.1] Serial Queue Population
     m_prefetchQueue.clear();
 
     if (dir == QuickView::BrowseDirection::IDLE) {
@@ -1427,8 +1438,8 @@ void ImageEngine::ScheduleJob(int index, QuickView::Priority pri) {
         if (m_cache.count(path)) return; // Already cached
     }
     
-    // Prefetch jobs enter only after the visible decode drains, so startup
-    // needs no artificial delay.
+    // Prefetch jobs may run concurrently with visible navigation. HeavyLane
+    // priority keeps the current frame ahead of speculative work.
     
     // [v4.1] Smart Prefetch logic re-enabled (Unified Dispatch Integration)
 
@@ -1481,25 +1492,24 @@ void ImageEngine::ScheduleJob(int index, QuickView::Priority pri) {
         }
         m_fastLane.Push(path, ComputePathHash(path), m_targetHdrHeadroomStops.load(std::memory_order_relaxed));
     } else if (info.type == CImageLoader::ImageType::TypeB_Heavy) {
-        // Large image: 
-        // Critical: Always submit
-        // Prefetch: Only if Heavy Lane is idle to avoid blocking Critical
-        // Prefetch: Only if Heavy Lane is idle to avoid blocking Critical
-        if (pri == QuickView::Priority::Critical || m_heavyPool->IsIdle()) {
-            {
-                std::lock_guard lock(m_pendingMutex);
-                m_pendingPaths.insert(path);
-            }
-            
-            // [v9.3] Alignment: JXL uses Direct Full Decode (serial upgrade cancelled).
-            // Prefetch must also be Full to prevent stuck Scaled/Blurry image.
-            if (info.format == L"JXL") {
-                m_heavyPool->SubmitFullDecode(path, ComputePathHash(path));
-            } else {
-                m_heavyPool->Submit(path, ComputePathHash(path)); // [ImageID]
-            }
+        {
+            std::lock_guard lock(m_pendingMutex);
+            if (!m_pendingPaths.insert(path).second) return;
         }
-        // If Heavy is busy and not critical, skip prefetch
+
+        const int poolPriority =
+            (pri == QuickView::Priority::Critical) ? 300 :
+            (pri == QuickView::Priority::High) ? 180 :
+            (pri == QuickView::Priority::Low) ? 80 : 100;
+        if (info.format == L"JXL") {
+            m_heavyPool->SubmitFullDecode(
+                path, ComputePathHash(path), nullptr,
+                PaneSlot::Primary, 0, poolPriority);
+        } else {
+            m_heavyPool->Submit(
+                path, ComputePathHash(path), nullptr,
+                PaneSlot::Primary, 0, poolPriority);
+        }
     }
 }
 
@@ -1513,7 +1523,11 @@ void ImageEngine::PruneQueue(int currentIndex, QuickView::BrowseDirection /*dir*
     EvictCache(currentIndex);
 }
 
-void ImageEngine::AddToCache(int index, const std::wstring& path, std::shared_ptr<QuickView::RawImageFrame> frame) {
+void ImageEngine::AddToCache(
+    int index,
+    const std::wstring& path,
+    std::shared_ptr<QuickView::RawImageFrame> frame,
+    const CImageLoader::ImageMetadata& metadata) {
     if (!frame || !frame->IsValid()) return;
     
     // [v10.5] Skip caching for animated images - animator is stateful and cannot be deep-copied.
@@ -1643,6 +1657,8 @@ void ImageEngine::AddToCache(int index, const std::wstring& path, std::shared_pt
         entry.frame = std::move(cachedFrame);
         entry.sourceIndex = index;
         entry.sizeBytes = newSize;
+        entry.metadata = metadata;
+        entry.hasMetadata = true;
 
         m_cache[path] = std::move(entry);
         m_lruOrder.push_front(path);
@@ -1753,39 +1769,48 @@ void ImageEngine::RequestFullMetadata() {
 
 
 
-// [v9.1] Serial Prefetch Pump
+// Continuously feed the worker pools instead of waiting for total engine idle.
+// Eight in-flight speculative jobs match this build's 16-core target: enough
+// throughput for uninterrupted 4K AVIF navigation without flooding all 256
+// lookahead entries into the decoder at once.
 void ImageEngine::PumpPrefetch() {
-    if (m_prefetchQueue.empty()) return;
-    // Process queue until we find work or run out
-    while (!m_prefetchQueue.empty()) {
-        // Strict Serial Check: Is ANY engine working?
-        // Check HeavyPool
-        if (!m_heavyPool->IsIdle()) return;
-        
-        // Check FastLane (accessing internal state via friend/member)
-        if (m_fastLane.GetQueueSize() > 0 || m_fastLane.m_isWorking.load()) return;
+    if (m_prefetchQueue.empty() || !m_navigator) return;
 
-        auto task = m_prefetchQueue.front();
+    constexpr int maxSpeculativeInFlight = 8;
+    int speculativeInFlight = 0;
+    {
+        std::lock_guard lock(m_pendingMutex);
+        speculativeInFlight = static_cast<int>(m_pendingPaths.size());
+    }
+
+    while (!m_prefetchQueue.empty() && speculativeInFlight < maxSpeculativeInFlight) {
+        const auto task = m_prefetchQueue.front();
         m_prefetchQueue.pop_front();
+        if (task.index < 0 || task.index >= static_cast<int>(m_navigator->Count())) continue;
 
-        // Check bounds
-        if (!m_navigator || task.index < 0 || task.index >= (int)m_navigator->Count()) continue;
-
-        // Check cache before scheduling to avoid "scheduling nothing" and stopping
-        std::wstring path = m_navigator->GetFile(task.index);
+        const std::wstring& path = m_navigator->GetFile(task.index);
+        bool cached = false;
         {
             std::lock_guard lock(m_cacheMutex);
-            if (m_cache.count(path)) continue; // Already cached, try next
+            cached = m_cache.count(path) != 0;
+        }
+        if (cached) continue;
+
+        bool pending = false;
+        {
+            std::lock_guard lock(m_pendingMutex);
+            pending = m_pendingPaths.count(path) != 0;
+        }
+        if (pending) {
+            ++speculativeInFlight;
+            continue;
         }
 
-        // Schedule it
         ScheduleJob(task.index, task.priority);
-        
-        // We assume work started (or was queued).
-        // Since we checked IsIdle above, and ScheduleJob submits,
-        // the engine should now be BUSY (or queued).
-        // So we return to wait for it to finish.
-        return; 
+        {
+            std::lock_guard lock(m_pendingMutex);
+            if (m_pendingPaths.count(path)) ++speculativeInFlight;
+        }
     }
 }
 

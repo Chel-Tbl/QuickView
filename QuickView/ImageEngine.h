@@ -164,7 +164,9 @@ public:
     const PrefetchPolicy& GetPrefetchPolicy() const { return m_prefetchPolicy; }
     size_t GetCacheMemoryUsage() const;
     int GetCacheItemCount() const;
-    std::shared_ptr<QuickView::RawImageFrame> GetCachedImage(const std::wstring& path);
+    std::shared_ptr<QuickView::RawImageFrame> GetCachedImage(
+        const std::wstring& path,
+        CImageLoader::ImageMetadata* metadata = nullptr);
 
     
     // === Debug/Instrumentation API ===
@@ -403,6 +405,8 @@ private:
         uint64_t lastUsed = 0;
         int status = 0; // 0=Empty, 1=Fast, 2=Heavy, 3=Pending (Legacy enum map)
         int sourceIndex = -1;
+        CImageLoader::ImageMetadata metadata;
+        bool hasMetadata = false;
         size_t sizeBytes = 0;
     };
 
@@ -412,7 +416,11 @@ private:
     mutable std::mutex m_cacheMutex;
     size_t m_currentCacheBytes = 0;
     
-    void AddToCache(int index, const std::wstring& path, std::shared_ptr<QuickView::RawImageFrame> frame);
+    void AddToCache(
+        int index,
+        const std::wstring& path,
+        std::shared_ptr<QuickView::RawImageFrame> frame,
+        const CImageLoader::ImageMetadata& metadata);
     void EvictCache(int currentIndex);
     void ScheduleJob(int index, QuickView::Priority priority);
     void PruneQueue(int currentIndex, QuickView::BrowseDirection dir);
@@ -422,7 +430,8 @@ private:
     std::vector<EngineEvent> m_manualEventQueue;
     mutable std::mutex m_manualQueueMutex;
 
-    // [v9.1] Serial Prefetch Queue
+    // Live lookahead queue. Navigation replaces its desired window, while the
+    // worker pools continue draining useful jobs in priority order.
     struct PrefetchTask {
         int index;
         QuickView::Priority priority;

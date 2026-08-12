@@ -68,10 +68,10 @@ public:
     // === Task Submission ===
     // Thread-safe. Will auto-expand if needed.
     // [ImageID] Uses stable path hash instead of incrementing token
-    void Submit(const std::wstring& path, ImageID imageId, std::shared_ptr<QuickView::MappedFile> mmf = nullptr, PaneSlot targetSlot = PaneSlot::Primary, uint64_t generationId = 0);
+    void Submit(const std::wstring& path, ImageID imageId, std::shared_ptr<QuickView::MappedFile> mmf = nullptr, PaneSlot targetSlot = PaneSlot::Primary, uint64_t generationId = 0, int priority = 200);
     
     // Full resolution decode (no scaling)
-    void SubmitFullDecode(const std::wstring& path, ImageID imageId, std::shared_ptr<QuickView::MappedFile> mmf = nullptr, PaneSlot targetSlot = PaneSlot::Primary, uint64_t generationId = 0);
+    void SubmitFullDecode(const std::wstring& path, ImageID imageId, std::shared_ptr<QuickView::MappedFile> mmf = nullptr, PaneSlot targetSlot = PaneSlot::Primary, uint64_t generationId = 0, int priority = 150);
     
     // [Titan Engine] Submit a tile decode task
     void SubmitTile(const std::wstring& path, ImageID imageId, std::shared_ptr<QuickView::MappedFile> mmf, QuickView::TileCoord coord, QuickView::RegionRequest region, int priority = 0);
@@ -89,8 +89,7 @@ public:
     void SubmitTileBatch(const std::wstring& path, ImageID imageId, std::shared_ptr<QuickView::MappedFile> mmf, const std::vector<std::pair<QuickView::TileCoord, QuickView::RegionRequest>>& batch, int priority = 0);
     
     // === Cancellation ===
-    // [ImageID] Cancel tasks that don't match the current imageId
-    void CancelOthers(ImageID currentId, PaneSlot targetSlot = PaneSlot::Primary);
+    void CancelOthers(ImageID currentId, PaneSlot targetSlot = PaneSlot::Primary, const std::vector<ImageID>& protectedIds = {});
     void CancelAll();
     
     // === Result Retrieval ===
