@@ -511,6 +511,7 @@ void GalleryOverlay::DiscardDeviceResources() {
 }
 
 void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
+                             GalleryRenderPass pass, float sdrWhiteScale,
                              ID2D1CommandList *pBgCmdList,
                              const D2D1_MATRIX_3X2_F &bgTransform) {
     if (!pDC || !m_pNav || m_pNav->Count() == 0) return;
@@ -545,6 +546,8 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
     if (galleryH <= 0.0f) return;
     
     D2D1_RECT_F panelRect = D2D1::RectF(0.0f, 0.0f, size.width, galleryH);
+    const bool isLight = IsLightThemeActive();
+    if (pass == GalleryRenderPass::Base) {
     
     // 1. D2D GeekGlass Background Rendering
     m_geekGlass.InitializeResources(pDC);
@@ -571,7 +574,7 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
     glassConfig.backgroundTransform = bgTransform;
     
     bool isPinnedFilmstrip = (m_isPinned && m_mode == GalleryMode::Filmstrip);
-    bool isLight = IsLightThemeActive();
+    const bool isLightBackground = isLight;
 
     if (isPinnedFilmstrip) {
         // [Pinned Filmstrip Mode] Ambient Cyber Gradient Injection (3% Cold Slate / Cyber Blue Mist)
@@ -582,7 +585,7 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
             m_brushPinnedGradient.Reset();
 
             D2D1_GRADIENT_STOP stops[3];
-            if (isLight) {
+            if (isLightBackground) {
                 // [High-End Cyber-Mica 3-Stop Gradient - Light Mode] Glacier Aurora Crystal
                 // Top: Crisp Glacier Specular Shine (99% White with subtle ice tint)
                 stops[0].position = 0.0f;
@@ -647,6 +650,7 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
         }
     }
 
+    }
     if (!m_brushSelection) pDC->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::DodgerBlue), &m_brushSelection);
     if (!m_brushText) pDC->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &m_brushText);
     if (!m_brushOverlay) pDC->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.5f), &m_brushOverlay);
@@ -797,8 +801,9 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
         prefetchEnd = endIdx;
     }
 
-    m_pThumbMgr->UpdateOptimizedPriority(
-        prefetchStart, prefetchEnd, startIdx, endIdx, centerIdx);
+    if (pass == GalleryRenderPass::Thumbnails) {
+        m_pThumbMgr->UpdateOptimizedPriority(prefetchStart, prefetchEnd, startIdx, endIdx, centerIdx);
+    }
     
     // Clip drawing area to the visual panel area
     pDC->PushAxisAlignedClip(panelRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -844,10 +849,8 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
             cellRect.bottom += expandH;
         }
         
-
-        // Every member of the multi-selection receives the same familiar
-        // accent ring; only the active item gets the subtle size lift above.
-        if (IsIndexSelected(i)) {
+        // Selection rings are Chrome-only.
+        if (pass == GalleryRenderPass::Chrome && IsIndexSelected(i)) {
             float borderOffset = 1.5f * scale;
             float borderRadius = 6.5f * scale;
             float borderWidth = 2.0f * scale;
@@ -866,52 +869,39 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
         const ImageID imgId = m_pNav->GetImageID(i);
         const std::wstring& path = m_pNav->GetFile(i);
         bool needsRequest = false;
-        auto bmp = m_pThumbMgr->GetThumbnail(
-            imgId, path.c_str(), pDC, targetSize, &needsRequest);
-        if (needsRequest && !m_isZooming) {
+        auto bmp = (pass == GalleryRenderPass::Thumbnails)
+            ? m_pThumbMgr->GetThumbnail(imgId, path.c_str(), pDC, targetSize, sdrWhiteScale, &needsRequest)
+            : nullptr;
+        if (pass == GalleryRenderPass::Thumbnails && needsRequest && !m_isZooming) {
             m_pThumbMgr->QueueRequest(imgId, path.c_str(), i, targetSize);
         }
         if (bmp) {
-            // Use BitmapBrush to draw with elegant 6px rounded corners
             ComPtr<ID2D1BitmapBrush> bmpBrush;
             HRESULT hr = pDC->CreateBitmapBrush(bmp.Get(), &bmpBrush);
             if (SUCCEEDED(hr) && bmpBrush) {
                 bmpBrush->SetExtendModeX(D2D1_EXTEND_MODE_CLAMP);
                 bmpBrush->SetExtendModeY(D2D1_EXTEND_MODE_CLAMP);
                 bmpBrush->SetInterpolationMode(D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-                
                 D2D1_SIZE_F bmpSize = bmp->GetSize();
                 D2D1_RECT_F src = GetCenterCropRect(bmpSize, cellRect);
                 float scaleX = (cellRect.right - cellRect.left) / (src.right - src.left);
                 float scaleY = (cellRect.bottom - cellRect.top) / (src.bottom - src.top);
-                D2D1_MATRIX_3X2_F trans = D2D1::Matrix3x2F::Scale(scaleX, scaleY) * 
-                                          D2D1::Matrix3x2F::Translation(cellRect.left - src.left * scaleX, cellRect.top - src.top * scaleY);
-                bmpBrush->SetTransform(trans);
-                
+                bmpBrush->SetTransform(D2D1::Matrix3x2F::Scale(scaleX, scaleY) *
+                    D2D1::Matrix3x2F::Translation(cellRect.left - src.left * scaleX, cellRect.top - src.top * scaleY));
                 pDC->FillRoundedRectangle(D2D1::RoundedRect(cellRect, 6.0f * scale, 6.0f * scale), bmpBrush.Get());
-            } else if (m_brushBg) {
-                // Fallback to placeholder box if CreateBitmapBrush fails
-                D2D1_COLOR_F phBase = isLight ? D2D1::ColorF(0.85f, 0.85f, 0.85f, 1.0f) : D2D1::ColorF(0.2f, 0.2f, 0.2f, 1.0f);
-                phBase.a *= m_transitionProgress;
-                m_brushBg->SetColor(phBase);
-                m_brushBg->SetOpacity(1.0f);
-                pDC->FillRoundedRectangle(D2D1::RoundedRect(cellRect, 6.0f * scale, 6.0f * scale), m_brushBg.Get());
             }
-        } else {
-            // Draw placeholder box (matching 6px rounded corners)
-            if (m_brushBg) {
-                D2D1_COLOR_F phBase = isLight ? D2D1::ColorF(0.85f, 0.85f, 0.85f, 1.0f) : D2D1::ColorF(0.2f, 0.2f, 0.2f, 1.0f);
-                phBase.a *= m_transitionProgress;
-                
-                m_brushBg->SetColor(phBase);
-                m_brushBg->SetOpacity(1.0f);
-                pDC->FillRoundedRectangle(D2D1::RoundedRect(cellRect, 6.0f * scale, 6.0f * scale), m_brushBg.Get());
-            }
-            
+        } else if (pass == GalleryRenderPass::Base && m_brushBg) {
+            D2D1_COLOR_F phBase = isLight ? D2D1::ColorF(0.85f, 0.85f, 0.85f, 1.0f)
+                                          : D2D1::ColorF(0.2f, 0.2f, 0.2f, 1.0f);
+            phBase.a *= m_transitionProgress;
+            m_brushBg->SetColor(phBase);
+            m_brushBg->SetOpacity(1.0f);
+            pDC->FillRoundedRectangle(D2D1::RoundedRect(cellRect, 6.0f * scale, 6.0f * scale), m_brushBg.Get());
         }
         // [RAW+JPEG Pairing] "+CR3"-style badge: this item carries a hidden
         // RAW. Theme-independent dark chip so it reads on any photo content.
-        if (const FileNavigator::PairedRaw* pairedRaw = m_pNav->GetPairedRaw(imgId)) {
+        if (pass == GalleryRenderPass::Chrome) {
+          if (const FileNavigator::PairedRaw* pairedRaw = m_pNav->GetPairedRaw(imgId)) {
             const std::wstring badgeText = FileNavigator::PairedRawLabel(*pairedRaw);
             const float bw = (8.0f + 6.5f * (float)badgeText.length()) * g_uiScale;
             const float bh = 15.0f * g_uiScale;
@@ -929,6 +919,7 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
             m_brushText->SetColor(prevBadgeTxt);
             m_brushText->SetOpacity(1.0f);
         }
+          }
     };
     
     // Seed center-out. Workers wake as requests arrive, so ascending index
@@ -961,21 +952,22 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
     }
 
     // Keep bounded adjacent rows requested until their cache entries exist.
-    // QueueRequest deduplicates cached/in-flight work; retrying on completion
-    // closes races where a priority-window change dropped a task.
-    if (m_mode == GalleryMode::FullGrid &&
+    if (pass == GalleryRenderPass::Thumbnails &&
+        m_mode == GalleryMode::FullGrid &&
         m_gridProgress >= 0.999f) {
-        const int prefetchSize = (std::max)(
-            256, static_cast<int>(std::ceil(gridCellW * 2.0f)));
+        const int prefetchSize = (std::max)(256, static_cast<int>(std::ceil(gridCellW * 2.0f)));
         for (int i = prefetchStart; i <= prefetchEnd; ++i) {
             if (i >= startIdx && i <= endIdx) continue;
-            m_pThumbMgr->QueueRequest(
-                m_pNav->GetImageID(i), m_pNav->GetFile(i).c_str(), i,
-                prefetchSize, true);
+            m_pThumbMgr->QueueRequest(m_pNav->GetImageID(i), m_pNav->GetFile(i).c_str(), i, prefetchSize, true);
         }
     }
     
     pDC->PopAxisAlignedClip(); // Pop thumbsClip
+    if (pass != GalleryRenderPass::Chrome) {
+        pDC->PopAxisAlignedClip(); // Pop panelRect
+        pDC->SetTransform(originalTransform);
+        return;
+    }
     
     // 4. Hover Tooltip Rendering
     if (m_hoverIndex >= 0 && m_hoverIndex < (int)count) {

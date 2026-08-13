@@ -40,6 +40,7 @@ public:
     // If L1 Cache hit (Raw Data), immediately creates Bitmap (L2) and returns it.
     ComPtr<ID2D1Bitmap> GetThumbnail(size_t imageId, LPCWSTR filePath,
                                     ID2D1RenderTarget* pRT, int targetSize,
+                                    float sdrWhiteScale,
                                     bool* needsRequest = nullptr);
 
     // Call this when file list changes completely
@@ -61,10 +62,10 @@ public:
     }
 
 private:
-    struct CacheEntry {
-        CImageLoader::ThumbData rawData; // L1
-        ComPtr<ID2D1Bitmap> bitmap;      // L2
-        size_t sizeBytes = 0;
+    struct L2CacheEntry {
+        ComPtr<ID2D1Bitmap> bitmap;
+        DXGI_FORMAT targetFormat = DXGI_FORMAT_UNKNOWN;
+        float sdrWhiteScale = 1.0f;
     };
 
     HWND m_hwnd = nullptr;
@@ -85,7 +86,7 @@ private:
     
     std::mutex m_cacheMutex;
     std::unordered_map<size_t, CImageLoader::ThumbData> m_l1Cache; // Worker writes, UI reads
-    std::unordered_map<size_t, ComPtr<ID2D1Bitmap>> m_l2Cache;     // UI only (but we track size here)
+    std::unordered_map<size_t, L2CacheEntry> m_l2Cache;             // UI-only bitmaps keyed by target
     
     // LRU Tracking
     std::list<size_t> m_lruList; 

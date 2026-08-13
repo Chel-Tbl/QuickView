@@ -25,15 +25,19 @@ using Microsoft::WRL::ComPtr;
 //     │     ├── ImageVisual B (Pong - Hidden/Pending)
 //     │     └── ImageVisual A (Ping - Visible/Active)
 //     │     └── ImageOverlayVisual (Gamut mask, inherits image transform)
-//     ├── Gallery Visual  - Gallery Overlay
-//     ├── Static Visual   - Toolbar, Window Controls
-//     └── Dynamic Visual  - HUD, OSD, Tooltip
+//     ├── Gallery Visual            - Gallery background and placeholders
+//     ├── GalleryThumbnails Visual  - Gallery image content
+//     ├── GalleryChrome Visual      - Gallery controls and adornments
+//     ├── Static Visual             - Toolbar, Window Controls
+//     └── Dynamic Visual            - HUD, OSD, Tooltip
 // ============================================================================
 
 enum class UILayer {
-    Static,   // Toolbar, Window Controls, Info Panel, Settings
-    Dynamic,  // Debug HUD, OSD, Tooltip, Dialog
-    Gallery   // Gallery Overlay (Independent scrolling/animation)
+    Static,            // Toolbar, Window Controls, Info Panel, Settings
+    Dynamic,           // Debug HUD, OSD, Tooltip, Dialog
+    Gallery,           // Gallery background and placeholders
+    GalleryThumbnails, // Gallery image content
+    GalleryChrome      // Gallery controls and adornments
 };
 
 class CompositionEngine {
@@ -160,8 +164,9 @@ private:
         POINT drawOffset = {};
         UINT width = 0;
         UINT height = 0;
+        DXGI_FORMAT surfaceFormat = DXGI_FORMAT_UNKNOWN;
     };
-    
+
     // Image Layer data (Ping-Pong) -> Supports Smart Dispatch (Standard vs Titan)
     struct ImageLayer {
         // [Common] The main visual node.
@@ -241,6 +246,8 @@ private:
     LayerData m_staticLayer;
     LayerData m_dynamicLayer;
     LayerData m_galleryLayer;
+    LayerData m_galleryThumbnailsLayer;
+    LayerData m_galleryChromeLayer;
     
     // D2D Device
     ComPtr<ID2D1Device> m_d2dDevice;

@@ -725,15 +725,25 @@ bool UIRenderer::RenderAll(HWND hwnd, float deltaTime) {
         }
     }
     
-    // ===== Gallery Layer =====
+    // Gallery dirty state redraws all three surfaces as one transaction.
     if (m_isGalleryDirty) {
-        ID2D1DeviceContext* dc = m_compEngine->BeginLayerUpdate(UILayer::Gallery, nullptr);
-        if (dc) {
-            RenderGalleryLayer(dc);
-            m_compEngine->EndLayerUpdate(UILayer::Gallery);
-            m_isGalleryDirty = false;
+        const float sdrWhiteScale = m_compEngine->GetDisplayColorState().GetSdrWhiteScale();
+        const D2D1_SIZE_F rtSize = D2D1::SizeF((float)m_width, (float)m_height);
+        const auto transform = m_compEngine->GetScreenTransform();
+        const bool visible = g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible();
+        const GalleryRenderPass passes[] = {
+            GalleryRenderPass::Base, GalleryRenderPass::Thumbnails, GalleryRenderPass::Chrome};
+        const UILayer layers[] = {UILayer::Gallery, UILayer::GalleryThumbnails, UILayer::GalleryChrome};
+        for (int i = 0; i < 3; ++i) {
+            ID2D1DeviceContext* dc = m_compEngine->BeginLayerUpdate(layers[i], nullptr);
+            if (!dc) continue;
+            if (visible) {
+                g_gallery.Render(dc, rtSize, passes[i], sdrWhiteScale, m_bgCommandList.Get(), transform);
+            }
+            m_compEngine->EndLayerUpdate(layers[i]);
             rendered = true;
         }
+        m_isGalleryDirty = false;
     }
 
     // ===== Dynamic Layer (Topmost, High Freq) =====
@@ -1326,7 +1336,10 @@ void UIRenderer::RenderDynamicLayer(ID2D1DeviceContext* dc, HWND hwnd) {
 void UIRenderer::RenderGalleryLayer(ID2D1DeviceContext* dc) {
     if (g_gallery.IsVisible() && !g_settingsOverlay.IsVisible() && !g_helpOverlay.IsVisible()) {
         D2D1_SIZE_F rtSize = D2D1::SizeF((float)m_width, (float)m_height);
-        g_gallery.Render(dc, rtSize, m_bgCommandList.Get(), m_compEngine ? m_compEngine->GetScreenTransform() : D2D1::Matrix3x2F::Identity());
+        g_gallery.Render(dc, rtSize, GalleryRenderPass::Base,
+            m_compEngine ? m_compEngine->GetDisplayColorState().GetSdrWhiteScale() : 1.0f,
+            m_bgCommandList.Get(),
+            m_compEngine ? m_compEngine->GetScreenTransform() : D2D1::Matrix3x2F::Identity());
     }
 }
 

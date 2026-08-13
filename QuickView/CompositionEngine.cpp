@@ -21,10 +21,12 @@ CompositionEngine::~CompositionEngine() {
 
 CompositionEngine::LayerData& CompositionEngine::GetLayer(UILayer layer) {
     switch (layer) {
-        case UILayer::Static:  return m_staticLayer;
+        case UILayer::Static: return m_staticLayer;
         case UILayer::Gallery: return m_galleryLayer;
+        case UILayer::GalleryThumbnails: return m_galleryThumbnailsLayer;
+        case UILayer::GalleryChrome: return m_galleryChromeLayer;
         case UILayer::Dynamic:
-        default:               return m_dynamicLayer;
+        default: return m_dynamicLayer;
     }
 }
 
@@ -439,13 +441,14 @@ HRESULT CompositionEngine::Initialize(HWND hwnd, ID3D11Device* d3dDevice, ID2D1D
     
     hr = m_device->CreateVisual(&m_backgroundLayer.visual);
     if (FAILED(hr)) return hr;
-
     hr = m_device->CreateVisual(&m_galleryLayer.visual);
     if (FAILED(hr)) return hr;
-    
+    hr = m_device->CreateVisual(&m_galleryThumbnailsLayer.visual);
+    if (FAILED(hr)) return hr;
+    hr = m_device->CreateVisual(&m_galleryChromeLayer.visual);
+    if (FAILED(hr)) return hr;
     hr = m_device->CreateVisual(&m_staticLayer.visual);
     if (FAILED(hr)) return hr;
-    
     hr = m_device->CreateVisual(&m_dynamicLayer.visual);
     if (FAILED(hr)) return hr;
     
@@ -471,34 +474,14 @@ HRESULT CompositionEngine::Initialize(HWND hwnd, ID3D11Device* d3dDevice, ID2D1D
     
     m_imageContainer->SetTransform(m_transformGroup.Get());
     
-    // 6. Build Visual Tree
-    // Structure:
-    // Root
-    //  ├── ImageContainer (with Transform)
-    //  │    ├── ImageB (bottom, pending)
-    //  │    └── ImageA (top, active)
-    //  ├── Gallery
-    //  ├── Static
-    //  └── Dynamic (topmost)
-    
-    // 6. Build Visual Tree (Order: Back -> Front)
-    // Root
-    //  ├── Background (0)
-    //  ├── ImageContainer (1) -> ImageB (Bottom), ImageA (Top)
-    //  ├── TileLayer (2) -> High-res Overlay
-    //  ├── Gallery (3)
-    //  ├── Static (4)
-    //  └── Dynamic (5)
-    
-    // Background first
+    // 6. Build Visual Tree (Back -> Front):
+    // ImageContainer -> Gallery -> GalleryThumbnails -> GalleryChrome -> Static -> Dynamic.
     m_rootVisual->AddVisual(m_backgroundLayer.visual.Get(), FALSE, nullptr);
-    
-    // Image Container above background
     m_rootVisual->AddVisual(m_imageContainer.Get(), TRUE, m_backgroundLayer.visual.Get());
-    
-    // UI layers explicitly ABOVE Image Container
     m_rootVisual->AddVisual(m_galleryLayer.visual.Get(), TRUE, m_imageContainer.Get());
-    m_rootVisual->AddVisual(m_staticLayer.visual.Get(), TRUE, m_galleryLayer.visual.Get());
+    m_rootVisual->AddVisual(m_galleryThumbnailsLayer.visual.Get(), TRUE, m_galleryLayer.visual.Get());
+    m_rootVisual->AddVisual(m_galleryChromeLayer.visual.Get(), TRUE, m_galleryThumbnailsLayer.visual.Get());
+    m_rootVisual->AddVisual(m_staticLayer.visual.Get(), TRUE, m_galleryChromeLayer.visual.Get());
     m_rootVisual->AddVisual(m_dynamicLayer.visual.Get(), TRUE, m_staticLayer.visual.Get());
 
     // Image children
@@ -507,10 +490,9 @@ HRESULT CompositionEngine::Initialize(HWND hwnd, ID3D11Device* d3dDevice, ID2D1D
     m_imageContainer->AddVisual(m_imageOverlayVisual.Get(), TRUE, m_imageA.visual.Get());
     m_imageOverlayVisual->SetTransform(m_imageOverlayScaleTransform.Get());
     m_imageOverlayVisual->SetBitmapInterpolationMode(DCOMPOSITION_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
-    
-    // 7. Set interpolation mode for image layers (HIGH QUALITY)
     m_imageA.visual->SetBitmapInterpolationMode(DCOMPOSITION_BITMAP_INTERPOLATION_MODE_LINEAR);
     m_imageB.visual->SetBitmapInterpolationMode(DCOMPOSITION_BITMAP_INTERPOLATION_MODE_LINEAR);
+
 
     
     // 8. Set Root
@@ -529,6 +511,10 @@ HRESULT CompositionEngine::Initialize(HWND hwnd, ID3D11Device* d3dDevice, ID2D1D
     hr = m_d2dDevice->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &m_imageOverlayContext);
     if (FAILED(hr)) return hr;
     m_imageOverlayContext->SetDpi(96.0f, 96.0f);
+    hr = m_d2dDevice->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &m_galleryThumbnailsLayer.context);
+    if (FAILED(hr)) return hr;
+    hr = m_d2dDevice->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &m_galleryChromeLayer.context);
+    if (FAILED(hr)) return hr;
     m_imageOverlayContext->SetUnitMode(D2D1_UNIT_MODE_PIXELS);
     
     hr = m_d2dDevice->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &m_staticLayer.context);
@@ -869,37 +855,31 @@ HRESULT CompositionEngine::AlignActiveLayer(float windowW, float windowH) {
 // ============================================================================
 HRESULT CompositionEngine::CreateLayerSurface(UILayer layer, UINT width, UINT height) {
     if (!m_device || width == 0 || height == 0) return E_FAIL;
-    
     LayerData& data = GetLayer(layer);
+    const DXGI_FORMAT format = (layer == UILayer::GalleryThumbnails && m_isAdvancedColor)
+        ? DXGI_FORMAT_R16G16B16A16_FLOAT : kUiSurfaceFormat;
     data.surface.Reset();
-    
-    HRESULT hr = m_device->CreateSurface(
-        width, height,
-        kUiSurfaceFormat,
-        DXGI_ALPHA_MODE_PREMULTIPLIED,
-        &data.surface
-    );
+    HRESULT hr = m_device->CreateSurface(width, height, format, DXGI_ALPHA_MODE_PREMULTIPLIED, &data.surface);
     if (FAILED(hr)) return hr;
-    
     data.width = width;
     data.height = height;
+    data.surfaceFormat = format;
     return data.visual->SetContent(data.surface.Get());
 }
 
 HRESULT CompositionEngine::CreateAllSurfaces(UINT width, UINT height) {
     CreateLayerSurface(UILayer::Static, width, height);
     CreateLayerSurface(UILayer::Gallery, width, height);
+    CreateLayerSurface(UILayer::GalleryThumbnails, width, height);
+    CreateLayerSurface(UILayer::GalleryChrome, width, height);
     CreateLayerSurface(UILayer::Dynamic, width, height);
-    
-    // Ensure background surface
     m_backgroundLayer.surface.Reset();
     HRESULT hr = m_device->CreateSurface(width, height, kUiSurfaceFormat, DXGI_ALPHA_MODE_PREMULTIPLIED, &m_backgroundLayer.surface);
     if (SUCCEEDED(hr)) {
         m_backgroundLayer.width = width;
         m_backgroundLayer.height = height;
+        m_backgroundLayer.surfaceFormat = kUiSurfaceFormat;
         m_backgroundLayer.visual->SetContent(m_backgroundLayer.surface.Get());
-        
-        // [Fix] Force background redraw since the surface was just created blank
         m_lastBgW = 0;
     }
     return hr;
@@ -907,32 +887,25 @@ HRESULT CompositionEngine::CreateAllSurfaces(UINT width, UINT height) {
 
 ID2D1DeviceContext* CompositionEngine::BeginLayerUpdate(UILayer layer, const RECT* dirtyRect) {
     LayerData& data = GetLayer(layer);
-    
     if (!data.surface || data.isDrawing) return nullptr;
-    
     ComPtr<IDXGISurface> dxgiSurface;
     HRESULT hr = data.surface->BeginDraw(dirtyRect, IID_PPV_ARGS(&dxgiSurface), &data.drawOffset);
     if (FAILED(hr)) return nullptr;
-    
     D2D1_BITMAP_PROPERTIES1 props = D2D1::BitmapProperties1(
         D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-        D2D1::PixelFormat(kUiSurfaceFormat, D2D1_ALPHA_MODE_PREMULTIPLIED)
-    );
-    
+        D2D1::PixelFormat(data.surfaceFormat, D2D1_ALPHA_MODE_PREMULTIPLIED));
+    if (data.surfaceFormat == DXGI_FORMAT_R16G16B16A16_FLOAT && m_scRgbContext)
+        props.colorContext = m_scRgbContext.Get();
     data.target.Reset();
     hr = data.context->CreateBitmapFromDxgiSurface(dxgiSurface.Get(), &props, &data.target);
     if (FAILED(hr)) {
         data.surface->EndDraw();
         return nullptr;
     }
-    
     data.context->SetTarget(data.target.Get());
     data.context->BeginDraw();
-    data.context->SetTransform(D2D1::Matrix3x2F::Translation(
-        (float)data.drawOffset.x, (float)data.drawOffset.y
-    ));
+    data.context->SetTransform(D2D1::Matrix3x2F::Translation((float)data.drawOffset.x, (float)data.drawOffset.y));
     data.context->Clear(D2D1::ColorF(0, 0, 0, 0));
-    
     data.isDrawing = true;
     return data.context.Get();
 }
@@ -1021,23 +994,16 @@ ID2D1DeviceContext* CompositionEngine::BeginImageOverlayUpdate(UINT sourceWidth,
 
 HRESULT CompositionEngine::EndImageOverlayUpdate(bool visible) {
     if (!m_imageOverlayDrawing || !m_imageOverlayContext || !m_imageOverlaySurface) return E_FAIL;
-
     m_imageOverlayContext->SetTransform(D2D1::Matrix3x2F::Identity());
     HRESULT hr = m_imageOverlayContext->EndDraw();
     m_imageOverlayContext->SetTarget(nullptr);
     m_imageOverlayTarget.Reset();
-
     HRESULT hr2 = m_imageOverlaySurface->EndDraw();
     m_imageOverlayDrawing = false;
-
     if (m_imageOverlayVisual) {
-        if (visible) {
-            m_imageOverlayVisual->SetContent(m_imageOverlaySurface.Get());
-        } else {
-            m_imageOverlayVisual->SetContent(nullptr);
-        }
+        if (visible) m_imageOverlayVisual->SetContent(m_imageOverlaySurface.Get());
+        else m_imageOverlayVisual->SetContent(nullptr);
     }
-
     return SUCCEEDED(hr) ? hr2 : hr;
 }
 
@@ -1052,25 +1018,26 @@ HRESULT CompositionEngine::ClearImageOverlay() {
 }
 
 HRESULT CompositionEngine::SetGalleryOffset(float offsetX, float offsetY) {
-    if (!m_galleryLayer.visual) return E_FAIL;
-    
+    if (!m_galleryLayer.visual || !m_galleryThumbnailsLayer.visual || !m_galleryChromeLayer.visual) return E_FAIL;
     HRESULT hr = m_galleryLayer.visual->SetOffsetX(offsetX);
     if (FAILED(hr)) return hr;
-    
-    return m_galleryLayer.visual->SetOffsetY(offsetY);
+    hr = m_galleryLayer.visual->SetOffsetY(offsetY);
+    if (FAILED(hr)) return hr;
+    hr = m_galleryThumbnailsLayer.visual->SetOffsetX(offsetX);
+    if (FAILED(hr)) return hr;
+    hr = m_galleryThumbnailsLayer.visual->SetOffsetY(offsetY);
+    if (FAILED(hr)) return hr;
+    hr = m_galleryChromeLayer.visual->SetOffsetX(offsetX);
+    if (FAILED(hr)) return hr;
+    return m_galleryChromeLayer.visual->SetOffsetY(offsetY);
 }
 
 HRESULT CompositionEngine::Resize(UINT width, UINT height) {
     if (width == 0 || height == 0) return S_OK;
     if (width == m_width && height == m_height) return S_OK;
-    
     m_width = width;
     m_height = height;
-    
-    // Only recreate UI surfaces, NOT image surfaces
     HRESULT hr = CreateAllSurfaces(width, height);
-
-    // [Center Topology] Anchor Container to Window Center
     if (m_imageContainer) {
         m_imageContainer->SetOffsetX(width / 2.0f);
         m_imageContainer->SetOffsetY(height / 2.0f);

@@ -2,6 +2,9 @@
 #include "ThumbnailManager.h"
 #include "ImageEngine.h"
 #include "ImageLoaderSimd.h"
+#include <DirectXPackedVector.h>
+#include <array>
+#include <cmath>
 #include <algorithm>
 #include <cwctype>
 #include "FileNavigator.h"
@@ -16,6 +19,26 @@ bool IsThumbnailAdequate(const CImageLoader::ThumbData& data,
     const int intrinsicCropAxis =
         (std::min)(data.origWidth, data.origHeight);
     return intrinsicCropAxis > 0 && decodedCropAxis >= intrinsicCropAxis;
+}
+const std::array<float, 65536>& GetPremultipliedSrgbLinearLut() {
+    static const auto lut = [] {
+        std::array<float, 65536> values{};
+        for (uint32_t alpha = 1; alpha < 256; ++alpha) {
+            const float alphaFloat = static_cast<float>(alpha) / 255.0f;
+            for (uint32_t channel = 0; channel < 256; ++channel) {
+                const float encoded = (std::min)(
+                    1.0f, static_cast<float>(channel) /
+                              static_cast<float>(alpha));
+                const float linear =
+                    encoded <= 0.04045f
+                        ? encoded / 12.92f
+                        : std::pow((encoded + 0.055f) / 1.055f, 2.4f);
+                values[alpha * 256 + channel] = linear * alphaFloat;
+            }
+        }
+        return values;
+    }();
+    return lut;
 }
 
 bool TryLoadCachedFrame(const std::wstring& path, int targetSize,
@@ -131,15 +154,22 @@ void ThumbnailManager::ClearCache() {
 
 ComPtr<ID2D1Bitmap> ThumbnailManager::GetThumbnail(
     size_t imageId, LPCWSTR /*filePath*/, ID2D1RenderTarget* pRT,
-    int targetSize, bool* needsRequest) {
+    int targetSize, float sdrWhiteScale, bool* needsRequest) {
     std::lock_guard<std::mutex> lock(m_cacheMutex);
     if (needsRequest) *needsRequest = false;
     const int requestedSize = std::clamp(targetSize, 64, 1024);
-
+    const DXGI_FORMAT format = pRT ? pRT->GetPixelFormat().format
+                                   : DXGI_FORMAT_B8G8R8A8_UNORM;
+    if (!std::isfinite(sdrWhiteScale) || sdrWhiteScale <= 0.0f)
+        sdrWhiteScale = 1.0f;
+    const float cacheScale =
+        format == DXGI_FORMAT_R16G16B16A16_FLOAT ? sdrWhiteScale : 1.0f;
     auto itL2 = m_l2Cache.find(imageId);
-    if (itL2 != m_l2Cache.end()) {
+    if (itL2 != m_l2Cache.end() &&
+        itL2->second.targetFormat == format &&
+        std::abs(itL2->second.sdrWhiteScale - cacheScale) < 0.0001f) {
         TouchLRU(imageId);
-        const D2D1_SIZE_F size = itL2->second->GetSize();
+        const D2D1_SIZE_F size = itL2->second.bitmap->GetSize();
         if (needsRequest) {
             bool adequate =
                 (std::min)(size.width, size.height) + 0.5f >=
@@ -153,43 +183,74 @@ ComPtr<ID2D1Bitmap> ThumbnailManager::GetThumbnail(
             }
             *needsRequest = !adequate;
         }
-        return itL2->second;
+        return itL2->second.bitmap;
     }
-
+    if (itL2 != m_l2Cache.end()) {
+        m_l2Cache.erase(itL2);
+    }
     auto itL1 = m_l1Cache.find(imageId);
-    if (itL1 != m_l1Cache.end()) {
-        TouchLRU(imageId);
-        if (itL1->second.isFailed) return nullptr;
-
-        if (needsRequest) {
-            *needsRequest =
-                !IsThumbnailAdequate(itL1->second, requestedSize);
-        }
-
-        ComPtr<ID2D1Bitmap> bmp;
-        if (pRT && !itL1->second.pixels.empty()) {
-            const D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
-                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
-                                  D2D1_ALPHA_MODE_PREMULTIPLIED));
-            const D2D1_SIZE_U size =
-                D2D1::SizeU(itL1->second.width, itL1->second.height);
-            const HRESULT hr =
-                pRT->CreateBitmap(size, itL1->second.pixels.data(),
-                                  itL1->second.stride, &props, &bmp);
-            if (SUCCEEDED(hr)) {
-                m_l2Cache[imageId] = bmp;
-            } else {
-                itL1->second.isFailed = true;
-                itL1->second.pixels.clear();
-                itL1->second.pixels.shrink_to_fit();
-                if (needsRequest) *needsRequest = false;
-            }
-        }
-        return bmp;
+    if (itL1 == m_l1Cache.end()) {
+        if (needsRequest) *needsRequest = true;
+        return nullptr;
     }
-
-    if (needsRequest) *needsRequest = true;
-    return nullptr;
+    if (itL1->second.isFailed) return nullptr;
+    if (needsRequest)
+        *needsRequest = !IsThumbnailAdequate(itL1->second, requestedSize);
+    if (!pRT) return nullptr;
+    const auto& raw = itL1->second;
+    ComPtr<ID2D1Bitmap> bmp;
+    if (format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
+        std::vector<uint16_t> converted;
+        const uint8_t* source = nullptr;
+        int sourceStride = 0;
+        if (!raw.hdrPixels.empty()) {
+            source = raw.hdrPixels.data();
+            sourceStride = raw.hdrStride;
+        } else if (!raw.pixels.empty()) {
+            const auto& linearLut = GetPremultipliedSrgbLinearLut();
+            converted.resize(static_cast<size_t>(raw.width) * raw.height * 4);
+            for (int y = 0; y < raw.height; ++y) {
+                const uint8_t* src =
+                    raw.pixels.data() + static_cast<size_t>(y) * raw.stride;
+                uint16_t* dst =
+                    converted.data() + static_cast<size_t>(y) * raw.width * 4;
+                for (int x = 0; x < raw.width; ++x) {
+                    const uint32_t alpha = src[x * 4 + 3];
+                    dst[x * 4 + 0] = DirectX::PackedVector::XMConvertFloatToHalf(
+                        linearLut[alpha * 256 + src[x * 4 + 2]] *
+                        sdrWhiteScale);
+                    dst[x * 4 + 1] = DirectX::PackedVector::XMConvertFloatToHalf(
+                        linearLut[alpha * 256 + src[x * 4 + 1]] *
+                        sdrWhiteScale);
+                    dst[x * 4 + 2] = DirectX::PackedVector::XMConvertFloatToHalf(
+                        linearLut[alpha * 256 + src[x * 4 + 0]] *
+                        sdrWhiteScale);
+                    dst[x * 4 + 3] = DirectX::PackedVector::XMConvertFloatToHalf(
+                        static_cast<float>(alpha) / 255.0f);
+                }
+            }
+            source = reinterpret_cast<const uint8_t*>(converted.data());
+            sourceStride = raw.width * 8;
+        }
+        if (!source) return nullptr;
+        const auto props = D2D1::BitmapProperties(
+            D2D1::PixelFormat(DXGI_FORMAT_R16G16B16A16_FLOAT,
+                              D2D1_ALPHA_MODE_PREMULTIPLIED));
+        if (FAILED(pRT->CreateBitmap(D2D1::SizeU(raw.width, raw.height), source,
+                                     sourceStride, &props, &bmp)))
+            return nullptr;
+    } else {
+        const auto props = D2D1::BitmapProperties(
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
+                              D2D1_ALPHA_MODE_PREMULTIPLIED));
+        if (raw.pixels.empty() ||
+            FAILED(pRT->CreateBitmap(D2D1::SizeU(raw.width, raw.height),
+                                     raw.pixels.data(), raw.stride, &props, &bmp)))
+            return nullptr;
+    }
+    m_l2Cache[imageId] = {bmp, format, cacheScale};
+    TouchLRU(imageId);
+    return bmp;
 }
 
 void ThumbnailManager::UpdateOptimizedPriority(
@@ -261,7 +322,8 @@ void ThumbnailManager::EvictLRU() {
         // [Fix] Correctly track memory reduction before erasing
         auto itL1 = m_l1Cache.find(idxToRemove);
         if (itL1 != m_l1Cache.end()) {
-            size_t size = itL1->second.pixels.size();
+            size_t size = itL1->second.pixels.size() +
+                          itL1->second.hdrPixels.size();
             if (m_currentCacheSize >= size) m_currentCacheSize -= size;
             else m_currentCacheSize = 0;
             m_l1Cache.erase(itL1);
@@ -288,7 +350,6 @@ void ThumbnailManager::AddToLRU(size_t imageId, size_t size) {
     
     EvictLRU();
 }
-
 void ThumbnailManager::TouchLRU(size_t imageId) {
     auto it = m_lruMap.find(imageId);
     if (it != m_lruMap.end()) {
@@ -299,19 +360,17 @@ void ThumbnailManager::TouchLRU(size_t imageId) {
 bool ThumbnailManager::StoreDecodedThumbnail(
     size_t imageId, CImageLoader::ThumbData&& data, uint64_t generation) {
     std::lock_guard<std::mutex> lock(m_cacheMutex);
-    if (generation != m_currentGeneration.load(std::memory_order_acquire)) {
+    if (generation != m_currentGeneration.load(std::memory_order_acquire))
         return false;
-    }
-
     if (auto existing = m_l1Cache.find(imageId);
         existing != m_l1Cache.end() && !existing->second.isFailed &&
         (std::min)(existing->second.width, existing->second.height) >=
-            (std::min)(data.width, data.height)) {
+            (std::min)(data.width, data.height))
         return false;
-    }
     if (auto existing = m_l1Cache.find(imageId);
         existing != m_l1Cache.end()) {
-        const size_t oldSize = existing->second.pixels.size();
+        const size_t oldSize = existing->second.pixels.size() +
+                               existing->second.hdrPixels.size();
         m_currentCacheSize =
             oldSize <= m_currentCacheSize ? m_currentCacheSize - oldSize : 0;
     }
@@ -320,8 +379,7 @@ bool ThumbnailManager::StoreDecodedThumbnail(
         m_lruList.erase(lru->second);
         m_lruMap.erase(lru);
     }
-
-    const size_t size = data.pixels.size();
+    const size_t size = data.pixels.size() + data.hdrPixels.size();
     m_l1Cache[imageId] = std::move(data);
     AddToLRU(imageId, size);
     return true;
@@ -492,7 +550,7 @@ void ThumbnailManager::QueueRequest(size_t imageId, LPCWSTR path,
         }
         if (auto bitmap = m_l2Cache.find(imageId);
             bitmap != m_l2Cache.end()) {
-            const D2D1_SIZE_F size = bitmap->second->GetSize();
+            const D2D1_SIZE_F size = bitmap->second.bitmap->GetSize();
             bool adequate =
                 (std::min)(size.width, size.height) + 0.5f >=
                 static_cast<float>(requestedSize);

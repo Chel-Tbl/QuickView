@@ -4208,15 +4208,9 @@ HRESULT CImageLoader::LoadThumbnail(LPCWSTR filePath, int targetSize,
     return E_INVALIDARG;
   pData->isValid = false;
   pData->pixels.clear();
+  pData->hdrPixels.clear();
+  pData->hdrStride = 0;
 
-  // Reuse the persistent Windows thumbnail provider when it already has a
-  // color-managed rendition. Misses fall through to the deterministic local
-  // AVIF pipeline below; both routes now produce SDR sRGB Gallery pixels.
-  if (SUCCEEDED(LoadShellThumbnail(
-          filePath, targetSize, pData, generateShellOnMiss))) {
-    DownscaleThumbDataIfNeeded(pData, targetSize);
-    return S_OK;
-  }
   const std::wstring_view extension = QuickView::ExtensionOf(filePath);
   const bool isAvifPath =
       QuickView::ExtEqualsIgnoreCase(extension, L".avif") ||
@@ -4228,9 +4222,26 @@ HRESULT CImageLoader::LoadThumbnail(LPCWSTR filePath, int targetSize,
       DownscaleThumbDataIfNeeded(pData, targetSize);
       return S_OK;
     }
-    if (directAvifHr == E_NOTIMPL)
+    if (directAvifHr == E_NOTIMPL) {
+      if (SUCCEEDED(LoadShellThumbnail(
+              filePath, targetSize, pData, generateShellOnMiss))) {
+        DownscaleThumbDataIfNeeded(pData, targetSize);
+        return S_OK;
+      }
       return generateShellOnMiss ? E_NOTIMPL : E_ABORT;
+    }
+    pData->isValid = false;
+    pData->pixels.clear();
+    pData->hdrPixels.clear();
+    pData->hdrStride = 0;
   }
+
+  if (SUCCEEDED(LoadShellThumbnail(
+          filePath, targetSize, pData, generateShellOnMiss))) {
+    DownscaleThumbDataIfNeeded(pData, targetSize);
+    return S_OK;
+  }
+
 
   const ImageHeaderInfo headerInfo = PeekHeader(filePath);
   const uint64_t fallbackFileSize =
@@ -5283,9 +5294,8 @@ HRESULT CImageLoader::LoadThumbAVIFFile(LPCWSTR filePath, int targetSize,
 
   // ICC and presentation transforms are authoritative. The Shell route already
   // handles them; do not produce a competing approximation in the direct path.
-  if (isHdrTransfer &&
-      ((decoder->image->icc.data && decoder->image->icc.size > 0) ||
-       decoder->image->transformFlags != 0)) {
+  if ((decoder->image->icc.data && decoder->image->icc.size > 0) ||
+      decoder->image->transformFlags != 0) {
     avifDecoderDestroy(decoder);
     return E_NOTIMPL;
   }
@@ -5322,6 +5332,11 @@ HRESULT CImageLoader::LoadThumbAVIFFile(LPCWSTR filePath, int targetSize,
   pData->stride = CalculateAlignedStride(outputWidth, 4);
   pData->pixels.resize(
       static_cast<size_t>(pData->stride) * outputHeight);
+  pData->hdrStride = isHdrTransfer ? CalculateAlignedStride(outputWidth, 8) : 0;
+  if (isHdrTransfer) {
+    pData->hdrPixels.resize(
+        static_cast<size_t>(pData->hdrStride) * outputHeight);
+  }
 
   avifRGBImage rgb;
   avifRGBImageSetDefaults(&rgb, decoder->image);
@@ -5360,16 +5375,19 @@ HRESULT CImageLoader::LoadThumbAVIFFile(LPCWSTR filePath, int targetSize,
       const float lumaB =
           sourcePrimaries == QuickView::ColorPrimaries::Rec2020 ? 0.0593f
                                                                  : 0.0722f;
-
       for (int y = 0; y < outputHeight; ++y) {
         const auto *src = reinterpret_cast<const uint16_t *>(
             sourcePixels.data() + static_cast<size_t>(y) * sourceStride);
         uint8_t *dst =
             pData->pixels.data() + static_cast<size_t>(y) * pData->stride;
+        auto *hdrDst = reinterpret_cast<uint16_t *>(
+            pData->hdrPixels.data() + static_cast<size_t>(y) * pData->hdrStride);
         for (int x = 0; x < outputWidth; ++x) {
           float r = transferLut[src[x * 4 + 0]];
           float g = transferLut[src[x * 4 + 1]];
           float b = transferLut[src[x * 4 + 2]];
+          const float alpha = std::clamp(
+              static_cast<float>(src[x * 4 + 3]) / 65535.0f, 0.0f, 1.0f);
           float sourceLuma = lumaR * r + lumaG * g + lumaB * b;
           if (isHlg && sourceLuma > 0.0f) {
             const float ootf =
@@ -5379,49 +5397,54 @@ HRESULT CImageLoader::LoadThumbAVIFFile(LPCWSTR filePath, int targetSize,
             b *= ootf;
             sourceLuma *= ootf;
           }
+
+          float linearR =
+              gamut.m[0][0] * r + gamut.m[0][1] * g + gamut.m[0][2] * b;
+          float linearG =
+              gamut.m[1][0] * r + gamut.m[1][1] * g + gamut.m[1][2] * b;
+          float linearB =
+              gamut.m[2][0] * r + gamut.m[2][1] * g + gamut.m[2][2] * b;
+          if (!std::isfinite(linearR)) linearR = 0.0f;
+          if (!std::isfinite(linearG)) linearG = 0.0f;
+          if (!std::isfinite(linearB)) linearB = 0.0f;
+          hdrDst[x * 4 + 0] =
+              DirectX::PackedVector::XMConvertFloatToHalf(linearR * alpha);
+          hdrDst[x * 4 + 1] =
+              DirectX::PackedVector::XMConvertFloatToHalf(linearG * alpha);
+          hdrDst[x * 4 + 2] =
+              DirectX::PackedVector::XMConvertFloatToHalf(linearB * alpha);
+          hdrDst[x * 4 + 3] =
+              DirectX::PackedVector::XMConvertFloatToHalf(alpha);
+
+          float toneScale = 1.0f;
           if (sourceLuma > 0.0f) {
             const float mappedLuma =
                 toneMapLut[LinearHdrToToneMapLutIndex(sourceLuma)];
-            const float toneScale = mappedLuma / sourceLuma;
-            r *= toneScale;
-            g *= toneScale;
-            b *= toneScale;
+            toneScale = mappedLuma / sourceLuma;
           }
-
-          float outR =
-              gamut.m[0][0] * r + gamut.m[0][1] * g + gamut.m[0][2] * b;
-          float outG =
-              gamut.m[1][0] * r + gamut.m[1][1] * g + gamut.m[1][2] * b;
-          float outB =
-              gamut.m[2][0] * r + gamut.m[2][1] * g + gamut.m[2][2] * b;
+          r = linearR * toneScale;
+          g = linearG * toneScale;
+          b = linearB * toneScale;
           const float y709 =
-              0.2126f * outR + 0.7152f * outG + 0.0722f * outB;
-          const float maxChannel = (std::max)({outR, outG, outB});
-          const float minChannel = (std::min)({outR, outG, outB});
+              0.2126f * r + 0.7152f * g + 0.0722f * b;
+          const float maxChannel = (std::max)({r, g, b});
+          const float minChannel = (std::min)({r, g, b});
           float gamutScale = 1.0f;
-          if (maxChannel > 1.0f && maxChannel > y709) {
-            gamutScale = (std::min)(
-                gamutScale, (1.0f - y709) / (maxChannel - y709));
-          }
-          if (minChannel < 0.0f && y709 > minChannel) {
-            gamutScale = (std::min)(
-                gamutScale, y709 / (y709 - minChannel));
-          }
-          outR = std::clamp(y709 + gamutScale * (outR - y709), 0.0f, 1.0f);
-          outG = std::clamp(y709 + gamutScale * (outG - y709), 0.0f, 1.0f);
-          outB = std::clamp(y709 + gamutScale * (outB - y709), 0.0f, 1.0f);
-
-          const uint32_t alpha = (src[x * 4 + 3] + 128u) / 257u;
-          const uint32_t encodedR = srgbLut[UnitFloatToLutIndex(outR)];
-          const uint32_t encodedG = srgbLut[UnitFloatToLutIndex(outG)];
-          const uint32_t encodedB = srgbLut[UnitFloatToLutIndex(outB)];
-          dst[x * 4 + 0] =
-              static_cast<uint8_t>((encodedB * alpha + 127u) / 255u);
-          dst[x * 4 + 1] =
-              static_cast<uint8_t>((encodedG * alpha + 127u) / 255u);
-          dst[x * 4 + 2] =
-              static_cast<uint8_t>((encodedR * alpha + 127u) / 255u);
-          dst[x * 4 + 3] = static_cast<uint8_t>(alpha);
+          if (maxChannel > 1.0f && maxChannel > y709)
+            gamutScale = (std::min)(gamutScale, (1.0f - y709) / (maxChannel - y709));
+          if (minChannel < 0.0f && y709 > minChannel)
+            gamutScale = (std::min)(gamutScale, y709 / (y709 - minChannel));
+          r = std::clamp(y709 + gamutScale * (r - y709), 0.0f, 1.0f);
+          g = std::clamp(y709 + gamutScale * (g - y709), 0.0f, 1.0f);
+          b = std::clamp(y709 + gamutScale * (b - y709), 0.0f, 1.0f);
+          const uint32_t alpha8 = (src[x * 4 + 3] + 128u) / 257u;
+          const uint32_t encodedR = srgbLut[UnitFloatToLutIndex(r)];
+          const uint32_t encodedG = srgbLut[UnitFloatToLutIndex(g)];
+          const uint32_t encodedB = srgbLut[UnitFloatToLutIndex(b)];
+          dst[x * 4 + 0] = static_cast<uint8_t>((encodedB * alpha8 + 127u) / 255u);
+          dst[x * 4 + 1] = static_cast<uint8_t>((encodedG * alpha8 + 127u) / 255u);
+          dst[x * 4 + 2] = static_cast<uint8_t>((encodedR * alpha8 + 127u) / 255u);
+          dst[x * 4 + 3] = static_cast<uint8_t>(alpha8);
         }
       }
     }
@@ -5444,7 +5467,7 @@ HRESULT CImageLoader::LoadThumbAVIFFile(LPCWSTR filePath, int targetSize,
   pData->isValid = true;
   pData->isBlurry = cropAxis > targetSize;
   pData->loaderName =
-      isHdrTransfer ? L"libavif Gallery HDR-to-SDR" : L"libavif Gallery";
+      isHdrTransfer ? L"libavif Gallery HDR+SDR" : L"libavif Gallery";
   return S_OK;
 }
 

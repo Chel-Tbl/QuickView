@@ -9,19 +9,18 @@
 
 
 enum class GalleryMode { Hidden, Filmstrip, FullGrid };
+enum class GalleryRenderPass { Base, Thumbnails, Chrome };
 
 class GalleryOverlay {
 public:
   GalleryOverlay();
   ~GalleryOverlay();
-
   void Initialize(ThumbnailManager *pThumbMgr, FileNavigator *pNav);
-
-  // Render the gallery overlay
-  void
-  Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
-         ID2D1CommandList *pBgCmdList = nullptr,
-         const D2D1_MATRIX_3X2_F &bgTransform = D2D1::Matrix3x2F::Identity());
+  void Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
+              GalleryRenderPass pass = GalleryRenderPass::Base,
+              float sdrWhiteScale = 1.0f,
+              ID2D1CommandList *pBgCmdList = nullptr,
+              const D2D1_MATRIX_3X2_F &bgTransform = D2D1::Matrix3x2F::Identity());
 
   // Device Resource Lifecycle Management
   void CreateDeviceResources(ID2D1RenderTarget* pDC);
