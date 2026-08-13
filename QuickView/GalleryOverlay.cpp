@@ -97,6 +97,9 @@ float GalleryOverlay::GetFilmCellSize() const {
 void GalleryOverlay::Initialize(ThumbnailManager* pThumbMgr, FileNavigator* pNav) {
     m_pThumbMgr = pThumbMgr;
     m_pNav = pNav;
+    m_selectedImageIds.clear();
+    m_selectionAnchorId = 0;
+    m_selectedIndex = -1;
     // Restore persistent thumbnail size from config
     if (g_config.GalleryThumbnailSize > 0)
         m_preferredCellWidth = (float)std::clamp(g_config.GalleryThumbnailSize, 80, 300);
@@ -111,12 +114,12 @@ void GalleryOverlay::Open(int currentIndex, GalleryMode targetMode) {
     // A direct FullGrid open has no filmstrip geometry to morph from. Start at
     // final grid layout so virtualization and visible thumbnail work are exact
     // on the first paint.
-    if (targetMode == GalleryMode::FullGrid) m_gridProgress = 1.0f;
+    m_selectedIndex = std::clamp(currentIndex, 0, (int)m_pNav->Count() - 1);
+    SelectOnly(m_selectedIndex);
     if (g_pImageEngine) {
         g_pImageEngine->SetGalleryPriorityMode(
             targetMode == GalleryMode::FullGrid);
     }
-    m_selectedIndex = currentIndex;
     
     // Save and hide Info Panel (Only for FullGrid, keep open for Filmstrip)
     if (targetMode == GalleryMode::FullGrid && g_runtime.ShowInfoPanel) {
@@ -155,14 +158,15 @@ void GalleryOverlay::Close(bool keepSelection) {
     m_mode = GalleryMode::Hidden;
     m_expandHoverTimer = 0.0f;
     m_gridSliderDragging = false;
-    if (m_gridScrollbarDragging && GetCapture() == m_hwnd) {
-        ReleaseCapture();
-    }
-    m_gridScrollbarDragging = false;
-    m_gridScrollbarHover = false;
     if (!keepSelection) {
         m_selectedIndex = -1;
+        m_selectedImageIds.clear();
+        m_selectionAnchorId = 0;
+        m_hasSelectionAnchor = false;
     }
+    if (m_gridScrollbarDragging && GetCapture() == m_hwnd) ReleaseCapture();
+    m_gridScrollbarDragging = false;
+    m_gridScrollbarHover = false;
     if (m_pThumbMgr) m_pThumbMgr->ClearQueue();
     if (g_pImageEngine) {
         g_pImageEngine->SetGalleryPriorityMode(false);
@@ -841,8 +845,9 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
         }
         
 
-        // Selection border (rounded, DodgerBlue/Accent, single crisp ring)
-        if (i == m_selectedIndex) {
+        // Every member of the multi-selection receives the same familiar
+        // accent ring; only the active item gets the subtle size lift above.
+        if (IsIndexSelected(i)) {
             float borderOffset = 1.5f * scale;
             float borderRadius = 6.5f * scale;
             float borderWidth = 2.0f * scale;
@@ -1476,13 +1481,30 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
 
 bool GalleryOverlay::OnKeyDown(UINT key) {
     if (!IsVisible()) return false;
-    
+    if (key == VK_ESCAPE || key == 'T') {
+        Close();
+        return true;
+    }
+    if (!m_pNav || m_pNav->Count() == 0) return false;
+
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    if (ctrl && key == 'A' && m_mode == GalleryMode::FullGrid) {
+        m_selectedImageIds.clear();
+        for (int i = 0; i < (int)m_pNav->Count(); ++i) {
+            m_selectedImageIds.insert(m_pNav->GetImageID(i));
+        }
+        if (!IsValidIndex(m_selectedIndex)) m_selectedIndex = 0;
+        if (!m_hasSelectionAnchor) {
+            m_selectionAnchorId = m_pNav->GetImageID(m_selectedIndex);
+            m_hasSelectionAnchor = true;
+        }
+        RequestRepaint(QuickView::PaintLayer::Gallery);
+        return true;
+    }
+
     switch (key) {
-        case VK_ESCAPE:
-        case 'T':
-            Close();
-            return true;
-            
+
         case VK_RETURN:
             if (m_selectedIndex >= 0) {
                 if (!m_isPinned) {
@@ -1492,34 +1514,42 @@ bool GalleryOverlay::OnKeyDown(UINT key) {
                 }
             }
             return true;
-            
+
         case VK_LEFT:
-            if (m_isPinned && m_mode == GalleryMode::Filmstrip) return false;
-            m_selectedIndex = std::max(0, m_selectedIndex - 1);
-            EnsureVisible(m_selectedIndex, m_lastSize, true);
-            break;
         case VK_RIGHT:
-            if (m_isPinned && m_mode == GalleryMode::Filmstrip) return false;
-            m_selectedIndex = std::min((int)m_pNav->Count() - 1, m_selectedIndex + 1);
-            EnsureVisible(m_selectedIndex, m_lastSize, true);
-            break;
         case VK_UP:
-            if (m_mode == GalleryMode::FullGrid) {
-                m_selectedIndex = std::max(0, m_selectedIndex - m_cols);
-                EnsureVisible(m_selectedIndex, m_lastSize, true);
+        case VK_DOWN: {
+            if (m_isPinned && m_mode == GalleryMode::Filmstrip &&
+                (key == VK_LEFT || key == VK_RIGHT)) {
+                return false;
             }
-            break;
-        case VK_DOWN:
-            if (m_mode == GalleryMode::FullGrid) {
-                m_selectedIndex = std::min(
-                    (int)m_pNav->Count() - 1, m_selectedIndex + m_cols);
-                EnsureVisible(m_selectedIndex, m_lastSize, true);
+            if (m_mode != GalleryMode::FullGrid &&
+                (key == VK_UP || key == VK_DOWN)) {
+                return false;
             }
-            break;
+
+            const int oldIndex = IsValidIndex(m_selectedIndex) ? m_selectedIndex : 0;
+            int newIndex = oldIndex;
+            if (key == VK_LEFT) newIndex = (std::max)(0, oldIndex - 1);
+            if (key == VK_RIGHT) newIndex = (std::min)((int)m_pNav->Count() - 1, oldIndex + 1);
+            if (key == VK_UP) newIndex = (std::max)(0, oldIndex - m_cols);
+            if (key == VK_DOWN) newIndex = (std::min)((int)m_pNav->Count() - 1, oldIndex + m_cols);
+
+            if (shift) {
+                int anchor = m_hasSelectionAnchor
+                    ? FindIndexByImageID(m_selectionAnchorId)
+                    : oldIndex;
+                SelectRange(anchor, newIndex, ctrl);
+            } else {
+                SelectOnly(newIndex);
+            }
+            EnsureVisible(newIndex, m_lastSize, true);
+            RequestRepaint(QuickView::PaintLayer::Gallery);
+            return true;
+        }
     }
-    
-    RequestRepaint(QuickView::PaintLayer::Gallery);
-    return true;
+
+    return false;
 }
 
 bool GalleryOverlay::OnMouseWheel(int delta) {
@@ -1983,20 +2013,92 @@ bool GalleryOverlay::OnLButtonUp(int x, int y, int& outSelectedIndex) {
     if (dist < 8.0f) {
         int idx = HitTest((float)x, (float)y);
         if (idx >= 0) {
-            m_selectedIndex = idx;
+            const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+            if (m_mode == GalleryMode::FullGrid && (ctrl || shift)) {
+                int anchor = m_hasSelectionAnchor ? FindIndexByImageID(m_selectionAnchorId) : m_selectedIndex;
+                if (shift) SelectRange(anchor, idx, ctrl);
+                else {
+                    const ImageID id = m_pNav->GetImageID(idx);
+                    if (m_selectedImageIds.count(id)) m_selectedImageIds.erase(id);
+                    else m_selectedImageIds.insert(id);
+                    m_selectedIndex = idx;
+                    m_selectionAnchorId = id;
+                    m_hasSelectionAnchor = true;
+                }
+                outSelectedIndex = -1;
+                RequestRepaint(QuickView::PaintLayer::Gallery);
+                return true;
+            }
+            SelectOnly(idx);
             outSelectedIndex = idx;
             if (!m_isPinned) {
-                if (!g_config.GalleryKeepVisibleOnThumbnailClick) {
-                    Close(true);
-                }
+                if (!g_config.GalleryKeepVisibleOnThumbnailClick) Close(true);
             } else if (m_mode == GalleryMode::FullGrid) {
                 SetMode(GalleryMode::Filmstrip);
             }
-            return true; // Clicked and selected a cell
+            return true;
         }
     }
-    
-    return false; // Did not select a cell (it was a drag release)
+    return false;
+}
+bool GalleryOverlay::IsValidIndex(int index) const {
+    return m_pNav && index >= 0 && index < (int)m_pNav->Count();
+}
+
+int GalleryOverlay::FindIndexByImageID(ImageID id) const {
+    if (!m_pNav || id == 0) return -1;
+    for (int i = 0; i < (int)m_pNav->Count(); ++i)
+        if (m_pNav->GetImageID(i) == id) return i;
+    return -1;
+}
+
+std::vector<int> GalleryOverlay::GetSelectedIndices() const {
+    std::vector<int> result;
+    if (!m_pNav) return result;
+    for (int i = 0; i < (int)m_pNav->Count(); ++i)
+        if (m_selectedImageIds.count(m_pNav->GetImageID(i)) != 0) result.push_back(i);
+    return result;
+}
+
+bool GalleryOverlay::IsIndexSelected(int index) const {
+    return IsValidIndex(index) && m_selectedImageIds.count(m_pNav->GetImageID(index)) != 0;
+}
+
+void GalleryOverlay::SelectOnly(int index) {
+    if (!IsValidIndex(index)) return;
+    const ImageID id = m_pNav->GetImageID(index);
+    m_selectedImageIds.clear();
+    m_selectedImageIds.insert(id);
+    m_selectionAnchorId = id;
+    m_hasSelectionAnchor = true;
+    m_selectedIndex = index;
+}
+
+void GalleryOverlay::SelectRange(int anchorIndex, int index, bool append) {
+    if (!IsValidIndex(index)) return;
+    if (!IsValidIndex(anchorIndex)) anchorIndex = index;
+    if (!append) m_selectedImageIds.clear();
+    for (int i = (std::min)(anchorIndex, index); i <= (std::max)(anchorIndex, index); ++i)
+        m_selectedImageIds.insert(m_pNav->GetImageID(i));
+    m_selectionAnchorId = m_pNav->GetImageID(anchorIndex);
+    m_hasSelectionAnchor = true;
+    m_selectedIndex = index;
+}
+
+void GalleryOverlay::OnNavigatorContentsChanged(bool preserveViewport) {
+    if (!m_pNav) return;
+    const float oldScrollTop = m_scrollTop;
+    std::unordered_set<ImageID> present;
+    for (int i = 0; i < (int)m_pNav->Count(); ++i) present.insert(m_pNav->GetImageID(i));
+    for (auto it = m_selectedImageIds.begin(); it != m_selectedImageIds.end();)
+        it = present.count(*it) ? std::next(it) : m_selectedImageIds.erase(it);
+    if (m_hasSelectionAnchor && !present.count(m_selectionAnchorId)) m_hasSelectionAnchor = false;
+    m_selectedIndex = IsValidIndex(m_pNav->Index()) ? m_pNav->Index() : -1;
+    if (m_selectedImageIds.empty() && IsValidIndex(m_selectedIndex)) SelectOnly(m_selectedIndex);
+    m_scrollTop = preserveViewport ? oldScrollTop : 0.0f;
+    m_needsEnsureVisible = false;
+    m_recenterPending = false;
 }
 
 

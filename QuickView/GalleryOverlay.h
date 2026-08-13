@@ -4,6 +4,8 @@
 #include "GeekIconRenderer.h"
 #include "ThumbnailManager.h"
 #include "pch.h"
+#include <unordered_set>
+#include <vector>
 
 
 enum class GalleryMode { Hidden, Filmstrip, FullGrid };
@@ -35,6 +37,11 @@ public:
   // State Control
   void Open(int currentIndex, GalleryMode targetMode = GalleryMode::Filmstrip);
   void Close(bool keepSelection = false); // Default: reset selection
+
+  std::vector<int> GetSelectedIndices() const;
+  bool IsIndexSelected(int index) const;
+  void SelectOnly(int index);
+  void OnNavigatorContentsChanged(bool preserveViewport);
 
   bool IsVisible() const {
     return m_mode != GalleryMode::Hidden || m_transitionProgress > 0.001f;
@@ -162,6 +169,9 @@ private:
   float m_cellHeight = 0.0f;
 
   int m_selectedIndex = -1;
+  std::unordered_set<ImageID> m_selectedImageIds;
+  ImageID m_selectionAnchorId = 0;
+  bool m_hasSelectionAnchor = false;
   bool m_needsEnsureVisible = false;
   int m_hoverIndex = -1;
 
@@ -229,4 +239,7 @@ private:
                                 D2D1_RECT_F &thumb) const;
   __declspec(noinline) D2D1_RECT_F GetItemRect(int index, float winW) const;
   int HitTest(float x, float y);
+  bool IsValidIndex(int index) const;
+  int FindIndexByImageID(ImageID id) const;
+  void SelectRange(int anchorIndex, int index, bool append);
 };

@@ -9332,6 +9332,9 @@ SKIP_EDGE_NAV:;
         // [Directory Watcher] Apply background scan result from watcher thread
         size_t oldCount = GetPaneContext(PaneSlot::Primary).navigator.Count();
         GetPaneContext(PaneSlot::Primary).navigator.ApplyPendingScanResult();
+        if (g_gallery.IsVisible()) {
+            g_gallery.OnNavigatorContentsChanged(true);
+        }
         size_t newCount = GetPaneContext(PaneSlot::Primary).navigator.Count();
         // A direct file open starts with a one-item seed playlist. Once the
         // background scan installs its siblings, warm both directions without
@@ -10678,6 +10681,16 @@ SKIP_EDGE_NAV:;
 
         // Gallery handling
         if (g_gallery.IsVisible()) {
+            if (wParam == VK_DELETE) {
+                const auto selected = g_gallery.GetSelectedIndices();
+                if (selected.empty()) return 0;
+                const int active = g_gallery.GetSelectedIndex();
+                g_galleryContextMenuIndex =
+                    g_gallery.IsIndexSelected(active) ? active : selected.front();
+                SendMessage(hwnd, WM_COMMAND, IDM_GALLERY_DELETE, 0);
+                return 0;
+            }
+
             if (g_gallery.OnKeyDown(wParam)) {
                 if (!g_gallery.IsVisible()) {
                     SetCursor(LoadCursor(nullptr, IDC_ARROW)); // Fix sticky wait cursor
@@ -10808,6 +10821,10 @@ SKIP_EDGE_NAV:;
             float winH = (float)(rcClient.bottom - rcClient.top);
             if (g_gallery.HitTestArea(ptClient.x, ptClient.y, winW, winH)) {
                 int idx = g_gallery.HitTestClient(ptClient.x, ptClient.y);
+                if (idx >= 0 && !g_gallery.IsIndexSelected(idx)) {
+                    g_gallery.SelectOnly(idx);
+                    RequestRepaint(PaintLayer::Gallery);
+                }
                 if (idx >= 0) {
                     g_galleryContextMenuIndex = idx;
                     ShowGalleryContextMenu(hwnd, pt);
@@ -10954,67 +10971,127 @@ SKIP_EDGE_NAV:;
             break;
         }
         case IDM_GALLERY_DELETE: {
-            if (g_galleryContextMenuIndex >= 0 && g_galleryContextMenuIndex < (int)GetPaneContext(PaneSlot::Primary).navigator.Count()) {
-                std::wstring recycleTarget = GetPaneContext(PaneSlot::Primary).navigator.GetFile(g_galleryContextMenuIndex);
-                if (!recycleTarget.empty()) {
-                    // Check RAW+JPEG Pairing for the target gallery item using direct ImageID
-                    std::wstring renderedPath, rawPath;
-                    auto& nav = GetPaneContext(PaneSlot::Primary).navigator;
-                    ImageID targetId = nav.GetImageID(g_galleryContextMenuIndex);
-                    if (const auto* pr = nav.GetPairedRaw(targetId)) {
-                        renderedPath = recycleTarget;
-                        rawPath = pr->path;
-                    }
-
-                    bool isViewingTarget = (g_galleryContextMenuIndex == nav.Index());
-
-                    if (!rawPath.empty()) {
-                        // --- CASE 1: Paired File (Let HandlePairedDelete show its own 4-button dialog directly) ---
-                        if (isViewingTarget) {
-                            SendMessage(hwnd, WM_COMMAND, IDM_DELETE, 0);
-                        } else {
-                            HandlePairedDelete(hwnd, recycleTarget, rawPath, false);
+            auto& nav = GetPaneContext(PaneSlot::Primary).navigator;
+            const int contextIndex = g_galleryContextMenuIndex;
+            if (contextIndex < 0 || contextIndex >= (int)nav.Count()) break;
+            const auto selected = g_gallery.GetSelectedIndices();
+            const bool multiSelection = selected.size() > 1 && g_gallery.IsIndexSelected(contextIndex);
+            if (multiSelection) {
+                std::vector<std::wstring> victims;
+                victims.reserve(selected.size());
+                std::unordered_set<std::wstring> victimSet;
+                victimSet.reserve(selected.size());
+                for (int index : selected) {
+                    if (index >= 0 && index < (int)nav.Count()) {
+                        const std::wstring& path = nav.GetFile(index);
+                        if (!path.empty() && victimSet.insert(path).second) {
+                            victims.push_back(path);
                         }
-                    } else {
-                        // --- CASE 2: Single File (Show the standard 2-button confirmation if enabled) ---
-                        bool confirmed = true;
-                        size_t lastSlash = recycleTarget.find_last_of(L"\\/");
-                        std::wstring filename = (lastSlash != std::wstring::npos) ? recycleTarget.substr(lastSlash + 1) : recycleTarget;
-
-                        if (g_config.ConfirmDelete) {
-                            std::wstring dlgMessage = L"Move to Recycle Bin?";
-                            std::vector<DialogButton> dlgButtons;
-                            dlgButtons.emplace_back(DialogResult::Yes, L"Delete");
-                            dlgButtons.emplace_back(DialogResult::Cancel, L"Cancel");
-                            
-                            DialogResult dlgResult = AppContext::GetInstance().DialogCtrl->ShowDialog(hwnd, filename.c_str(), dlgMessage.c_str(),
-                                                                         D2D1::ColorF(0.85f, 0.25f, 0.25f), dlgButtons, true, AppStrings::Checkbox_NeverConfirmDelete, L"");
-                            confirmed = (dlgResult == DialogResult::Yes);
-                            if (confirmed && AppContext::GetInstance().Dialog.IsChecked) {
-                                g_config.ConfirmDelete = false;
-                                SaveConfig();
+                    }
+                }
+                if (victims.empty()) break;
+                bool confirmed = true;
+                if (g_config.ConfirmDelete) {
+                    std::wstring title = std::to_wstring(victims.size()) + L" files";
+                    std::vector<DialogButton> buttons;
+                    buttons.emplace_back(DialogResult::Yes, L"Delete");
+                    buttons.emplace_back(DialogResult::Cancel, L"Cancel");
+                    const DialogResult result = AppContext::GetInstance().DialogCtrl->ShowDialog(
+                        hwnd, title.c_str(), L"Move selected files to Recycle Bin?",
+                        D2D1::ColorF(0.85f, 0.25f, 0.25f), buttons, true,
+                        AppStrings::Checkbox_NeverConfirmDelete, L"");
+                    confirmed = (result == DialogResult::Yes);
+                    if (confirmed && AppContext::GetInstance().Dialog.IsChecked) {
+                        g_config.ConfirmDelete = false;
+                        SaveConfig();
+                    }
+                }
+                if (confirmed) {
+                    const std::wstring currentPath = GetPaneContext(PaneSlot::Primary).path;
+                    const bool currentVictim = victimSet.count(currentPath) != 0;
+                    std::wstring nextPath;
+                    if (currentVictim) {
+                        for (int step = 1; step <= (int)nav.Count(); ++step) {
+                            const int candidate = (nav.Index() + step) % (int)nav.Count();
+                            const std::wstring& candidatePath = nav.GetFile(candidate);
+                            if (victimSet.count(candidatePath) == 0) {
+                                nextPath = candidatePath;
+                                break;
                             }
                         }
-
-                        if (confirmed) {
-                            if (isViewingTarget) {
-                                SendMessage(hwnd, WM_COMMAND, IDM_DELETE, 0);
-                            } else {
-                                std::vector<std::wstring> victims = { recycleTarget };
-                                if (RecycleFiles(victims)) {
-                                    g_osd.Show(hwnd, AppStrings::OSD_MovedToRecycleBin, false);
-                                    g_undoManager.PushDelete(recycleTarget, false);
-                                    
-                                    // Refresh current navigator
-                                    std::wstring currentPath = GetPaneContext(PaneSlot::Primary).path;
-                                    GetPaneContext(PaneSlot::Primary).navigator.Initialize(currentPath, hwnd);
-                                    
-                                    // Force gallery to refresh cache and repaint
-                                    g_gallery.Initialize(&g_thumbMgr, &GetPaneContext(PaneSlot::Primary).navigator);
-                                    RequestRepaint(PaintLayer::All);
+                        if (nextPath.empty()) {
+                            for (int step = 1; step <= (int)nav.Count(); ++step) {
+                                const int candidate = (nav.Index() - step + (int)nav.Count()) % (int)nav.Count();
+                                const std::wstring& candidatePath = nav.GetFile(candidate);
+                                if (victimSet.count(candidatePath) == 0) {
+                                    nextPath = candidatePath;
+                                    break;
                                 }
                             }
                         }
+                        ReleaseImageResources();
+                    }
+                    if (RecycleFiles(victims)) {
+                        for (const auto& path : victims) g_undoManager.PushDelete(path, false);
+                        g_osd.Show(hwnd, AppStrings::OSD_MovedToRecycleBin, false);
+                        nav.RescanDirectory();
+                        if (currentVictim) {
+                            int nextIndex = nextPath.empty() ? -1 : nav.FindIndex(nextPath);
+                            if (nextIndex < 0 && nav.Count() > 0) {
+                                nextIndex = std::clamp(nav.Index(), 0, (int)nav.Count() - 1);
+                            }
+                            if (nextIndex >= 0) {
+                                nav.SetIndex(nextIndex);
+                                const std::wstring replacement = nav.GetFile(nextIndex);
+                                LoadImageAsync(hwnd, nav.GetResolvedPath(replacement).c_str());
+                            } else {
+                                GetPaneContext(PaneSlot::Primary).Reset();
+                            }
+                        }
+                        g_gallery.OnNavigatorContentsChanged(true);
+                        RequestRepaint(PaintLayer::All);
+                    }
+                }
+                break;
+            }
+            std::wstring recycleTarget = nav.GetFile(contextIndex);
+            if (recycleTarget.empty()) break;
+            std::wstring renderedPath, rawPath;
+            ImageID targetId = nav.GetImageID(contextIndex);
+            if (const auto* pr = nav.GetPairedRaw(targetId)) {
+                renderedPath = recycleTarget;
+                rawPath = pr->path;
+            }
+            const bool isViewingTarget = (contextIndex == nav.Index());
+            if (!rawPath.empty()) {
+                if (isViewingTarget) SendMessage(hwnd, WM_COMMAND, IDM_DELETE, 0);
+                else HandlePairedDelete(hwnd, recycleTarget, rawPath, false);
+            } else {
+                bool confirmed = true;
+                size_t lastSlash = recycleTarget.find_last_of(L"\\/");
+                std::wstring filename = (lastSlash != std::wstring::npos) ? recycleTarget.substr(lastSlash + 1) : recycleTarget;
+                if (g_config.ConfirmDelete) {
+                    std::vector<DialogButton> buttons;
+                    buttons.emplace_back(DialogResult::Yes, L"Delete");
+                    buttons.emplace_back(DialogResult::Cancel, L"Cancel");
+                    const DialogResult result = AppContext::GetInstance().DialogCtrl->ShowDialog(
+                        hwnd, filename.c_str(), L"Move to Recycle Bin?",
+                        D2D1::ColorF(0.85f, 0.25f, 0.25f), buttons, true,
+                        AppStrings::Checkbox_NeverConfirmDelete, L"");
+                    confirmed = (result == DialogResult::Yes);
+                    if (confirmed && AppContext::GetInstance().Dialog.IsChecked) {
+                        g_config.ConfirmDelete = false;
+                        SaveConfig();
+                    }
+                }
+                if (confirmed) {
+                    if (isViewingTarget) SendMessage(hwnd, WM_COMMAND, IDM_DELETE, 0);
+                    else if (RecycleFiles({ recycleTarget })) {
+                        g_osd.Show(hwnd, AppStrings::OSD_MovedToRecycleBin, false);
+                        g_undoManager.PushDelete(recycleTarget, false);
+                        nav.RescanDirectory();
+                        g_gallery.OnNavigatorContentsChanged(true);
+                        RequestRepaint(PaintLayer::All);
                     }
                 }
             }
@@ -11518,6 +11595,7 @@ SKIP_EDGE_NAV:;
                     // Peek next using Navigator (which should still track the collection)
                     std::wstring nextPath = GetPaneContext(PaneSlot::Primary).navigator.PeekNext();
                     if (nextPath == recycleTarget) nextPath = GetPaneContext(PaneSlot::Primary).navigator.PeekPrevious();
+                    if (nextPath == recycleTarget) nextPath.clear();
                     
                     // Release image before delete (Critical for file lock)
                     ReleaseImageResources();
@@ -11549,23 +11627,28 @@ SKIP_EDGE_NAV:;
                         // Ideally we should remove the file from navigator list too, but Initialize handles that.
                         // For QuickView, re-init is safer to sync with FS changes.
                         if (!nextPath.empty()) {
-                             // Initialize will scan directory again
-                             // But wait, if we scan, we might lose 'nextPath' context if folder content changed vastly?
-                             // Optimization: Just load nextPath. Initialize inside Navigate will handle it?
-                             // NavigateTo doesn't init navigator. 
-                             // Let's call Initialize(nextPath) to refresh list and set index.
-                             GetPaneContext(PaneSlot::Primary).navigator.Initialize(nextPath, hwnd);
-                             LoadImageAsync(hwnd, GetPaneContext(PaneSlot::Primary).navigator.GetResolvedPath(nextPath).c_str());
-                             if (IsCompareModeActive()) {
-                                 MarkCompareDirty();
-                             }
+                            auto& navigator = GetPaneContext(PaneSlot::Primary).navigator;
+                            if (g_gallery.IsVisible()) {
+                                navigator.RescanDirectory();
+                                const int nextIndex = navigator.FindIndex(nextPath);
+                                if (nextIndex >= 0) navigator.SetIndex(nextIndex);
+                                g_gallery.OnNavigatorContentsChanged(true);
+                            } else {
+                                navigator.Initialize(nextPath, hwnd);
+                            }
+                            LoadImageAsync(hwnd, navigator.GetResolvedPath(nextPath).c_str());
+                            if (IsCompareModeActive()) {
+                                MarkCompareDirty();
+                            }
                         } else {
-                             // Empty folder?
-                             GetPaneContext(PaneSlot::Primary).navigator.Initialize(L"", hwnd);
-                             if (IsCompareModeActive()) {
-                                 AppContext::GetInstance().CompareCtrl->ExitMode(hwnd);
-                             }
-                             RequestRepaint(PaintLayer::All);
+                            GetPaneContext(PaneSlot::Primary).navigator.Initialize(L"", hwnd);
+                            if (g_gallery.IsVisible()) {
+                                g_gallery.OnNavigatorContentsChanged(true);
+                            }
+                            if (IsCompareModeActive()) {
+                                AppContext::GetInstance().CompareCtrl->ExitMode(hwnd);
+                            }
+                            RequestRepaint(PaintLayer::All);
                         }
                     }
                 }
@@ -14816,6 +14899,7 @@ static void HandlePairedDelete(HWND hwnd, const std::wstring& renderedPath, cons
             g_pairViewRawPath.clear();
             g_pairViewRenderedPath.clear();
             nav.RescanDirectory();
+            if (g_gallery.IsVisible()) g_gallery.OnNavigatorContentsChanged(true);
             if (onRawFace) {
                 const int idx = nav.FindIndex(renderedPath);
                 if (idx >= 0) nav.SetIndex(idx);
@@ -14857,10 +14941,18 @@ static void HandlePairedDelete(HWND hwnd, const std::wstring& renderedPath, cons
         if (delRendered && !delRaw) nextPath = rawPath;
 
         if (!nextPath.empty()) {
-            nav.Initialize(nextPath, hwnd);
+            if (g_gallery.IsVisible()) {
+                nav.RescanDirectory();
+                const int nextIndex = nav.FindIndex(nextPath);
+                if (nextIndex >= 0) nav.SetIndex(nextIndex);
+                g_gallery.OnNavigatorContentsChanged(true);
+            } else {
+                nav.Initialize(nextPath, hwnd);
+            }
             LoadImageAsync(hwnd, nav.GetResolvedPath(nextPath).c_str());
         } else {
             nav.Initialize(L"", hwnd); // folder emptied
+            if (g_gallery.IsVisible()) g_gallery.OnNavigatorContentsChanged(true);
         }
         RequestRepaint(PaintLayer::All);
     } else {
@@ -14880,12 +14972,16 @@ static void HandlePairedDelete(HWND hwnd, const std::wstring& renderedPath, cons
             g_undoManager.PushDelete(rawPath, false);
         }
 
-        // Refresh current navigator
-        std::wstring currentPath = GetPaneContext(PaneSlot::Primary).path;
-        nav.Initialize(currentPath, hwnd);
-        
+        // Refresh current navigator without collapsing Gallery to the
+        // one-item direct-open seed playlist.
+        if (g_gallery.IsVisible()) {
+            nav.RescanDirectory();
+            g_gallery.OnNavigatorContentsChanged(true);
+        } else {
+            nav.Initialize(GetPaneContext(PaneSlot::Primary).path, hwnd);
+        }
+
         // Force gallery to refresh cache and repaint
-        g_gallery.Initialize(&g_thumbMgr, &nav);
         RequestRepaint(PaintLayer::All);
     }
 }
