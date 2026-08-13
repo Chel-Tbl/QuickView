@@ -1290,12 +1290,26 @@ void HeavyLanePool::PerformDecode(int workerId, const JobInfo& job, std::stop_to
         }
     }
 
-    // [Unified Architecture] Always use the Back Arena for new decoding jobs
-    // Note: For Tiles, we should ideally use SlabAllocator.
-    // For now, reuse the heavy arena (it resets anyway).
-    QuantumArena& arena = m_pool->GetBackHeavyArena();
-    
-    // RAII guard for concurrent jobs
+    const bool useWorkerArena =
+        job.type == JobType::Standard &&
+        !m_isTitanMode.load(std::memory_order_relaxed);
+    if (useWorkerArena && !self.standardArena) {
+        // Normal images stay below the 50 MP Titan threshold. Reserve 256 MiB
+        // per worker (committed on demand), enough for a 50 MP 8-bit output.
+        self.standardArena =
+            std::make_unique<QuantumArena>(256ULL * 1024ULL * 1024ULL);
+    }
+    QuantumArena& arena = useWorkerArena
+        ? *self.standardArena
+        : m_pool->GetBackHeavyArena();
+    if (useWorkerArena) {
+        // The prior result was deep-copied before this worker accepted another
+        // job, so its scratch storage is no longer live.
+        arena.Reset();
+    }
+
+    // Shared Titan/tile jobs still use active-job tracking to protect the
+    // ping-pong arena. A worker-private standard arena always has one owner.
     struct ArenaJobGuard {
         QuantumArena& a;
         ArenaJobGuard(QuantumArena& arena) : a(arena) {
@@ -1313,10 +1327,8 @@ void HeavyLanePool::PerformDecode(int workerId, const JobInfo& job, std::stop_to
     
     auto decodeStart = std::chrono::high_resolution_clock::now();
 
-    // Only reset the arena if we are the first and only job running on it right now.
-    // (e.g. all background tile decoding for previous image finished).
-    // Since we already incremented it, it will be exactly 1.
-    if (arena.m_activeJobs.load(std::memory_order_acquire) == 1) {
+    if (!useWorkerArena &&
+        arena.m_activeJobs.load(std::memory_order_acquire) == 1) {
         arena.Reset();
     }
 
@@ -1944,10 +1956,9 @@ tile_decode_done: ; // [P14] Jump target for fast path (skip legacy TJ decode)
                     TraceLoggingUInt64((uint64_t)bufferSize, "BufferSize"));
             }
 
-            // [Fix] Compute histogram for HeavyLane results
-            if (evt.rawFrame && evt.rawFrame->IsValid() && !evt.rawFrame->IsSvg() && job.type == JobType::Standard) {
-                m_loader->ComputeHistogramFromFrame(*evt.rawFrame, &meta);
-            }
+            // Histogram/sharpness are UI telemetry, not decode completion.
+            // Compute them lazily when the info panel asks; doing this here
+            // serialized memory-bandwidth work across every prefetched frame.
 
             evt.metadata = std::move(meta);
             

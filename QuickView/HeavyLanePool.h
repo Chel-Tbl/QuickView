@@ -154,8 +154,12 @@ private:
         // [Phase 4.1] Active decode subprocess managed by this worker
         HANDLE activeWorkerProcess = nullptr;
         
-        // [Unified Architecture] Shared Arena from TripleArenaPool (ImageEngine owns it)
-        // Workers no longer own arenas. They use GetBackHeavyArena() from parent pool.
+        // Titan/tile jobs use the shared ping-pong arenas.
+        // Standard decodes use one resettable arena per worker. Sharing the
+        // ping-pong arena made a continuous decode stream monotonic: it could
+        // not reset until every concurrent job stopped, eventually exhausting
+        // the arena during sustained scrolling.
+        std::unique_ptr<QuantumArena> standardArena;
         
         Worker() = default;
         Worker(Worker&&) = default;

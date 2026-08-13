@@ -148,7 +148,7 @@ constexpr UINT_PTR TIMER_ID_STARTUP_SHOW = 992;
 constexpr UINT WM_SUBFRAME_NAV_READY = WM_APP + 23;
 
 void NavigateEdge(HWND hwnd, bool toLast);
-static void FlushBufferedNavigation(HWND hwnd, int delta);
+void Navigate(HWND hwnd, int direction);
 
 template <size_t Capacity>
 class SubframeSpscQueue {
@@ -197,9 +197,10 @@ private:
     alignas(64) std::atomic<uint64_t> m_write{0};
     alignas(64) std::atomic<uint64_t> m_read{0};
 };
-// to the frame queue, and the DWM-synchronized UI message consumes one
-// immutable frame snapshot. Commands remain ordered; only adjacent equal
-// directions are folded at drain.
+// A dedicated producer thread transfers captured commands to a pending-frame
+// queue. OnPaint snapshots that queue at the start of the rendered frame,
+// matching Godot's mouse_subframe_begin_frame boundary. Commands remain
+// ordered; only adjacent equal directions are folded at drain.
 class SubframeNavigationInput {
 public:
     void Start(HWND hwnd) {
@@ -232,47 +233,36 @@ public:
         }
         const int8_t encoded = static_cast<int8_t>(
             std::clamp(command, -2, 2));
-        while (m_running.load(std::memory_order_acquire) &&
-               !m_captureQueue.TryPush(encoded)) {
-            m_wake.notify_one();
-            std::this_thread::yield();
-        }
+        // Input capture must never wait for the consumer. The fixed queue
+        // covers more than nine minutes of 120 Hz input; if the UI cannot
+        // consume 65,536 commands, retaining another command is less useful
+        // than keeping the window message thread responsive.
+        if (!m_captureQueue.TryPush(encoded)) return;
         m_wake.notify_one();
     }
 
     void DrainOnFrame(HWND hwnd) {
         if (m_draining.exchange(true, std::memory_order_acq_rel)) return;
 
-        // Only commands published before this frame boundary belong to it.
+        // Decode readiness is the application frame boundary for image
+        // navigation. Do not advance the target again while its frame is
+        // unresolved: repeated target replacement cancels useful work and
+        // eventually leaves a multi-second hole after the warm cache runway.
         m_frameRequested.store(false, std::memory_order_release);
-        const uint64_t writeLimit = m_frameQueue.WriteSnapshot();
-        int8_t command = 0;
-        int runDirection = 0;
-        int runLength = 0;
-        auto flushStepRun = [&] {
-            if (runLength <= 0) return;
-            FlushBufferedNavigation(
-                hwnd, runDirection * runLength);
-            runLength = 0;
-        };
-        while (m_frameQueue.TryPopBefore(writeLimit, &command)) {
-            if (command == -2 || command == 2) {
-                flushStepRun();
-                NavigateEdge(hwnd, command > 0);
-                continue;
+        if (!g_isLoading) {
+            const uint64_t writeLimit = m_frameQueue.WriteSnapshot();
+            int8_t command = 0;
+            if (m_frameQueue.TryPopBefore(writeLimit, &command)) {
+                if (command == -2 || command == 2) {
+                    NavigateEdge(hwnd, command > 0);
+                } else {
+                    Navigate(hwnd, command > 0 ? 1 : -1);
+                }
             }
-            const int direction = command > 0 ? 1 : -1;
-            if (runLength > 0 && direction != runDirection) {
-                flushStepRun();
-            }
-            runDirection = direction;
-            ++runLength;
         }
-        flushStepRun();
 
         m_draining.store(false, std::memory_order_release);
-        if (!m_frameQueue.Empty()) {
-            m_frameRequested.store(false, std::memory_order_release);
+        if (!g_isLoading && !m_frameQueue.Empty()) {
             RequestFrame();
         }
         m_wake.notify_one();
@@ -311,18 +301,10 @@ private:
             }
             if (stopToken.stop_requested()) break;
 
-            // The dedicated input thread owns sub-frame timing. Wait for the
-            // compositor boundary, then include every command captured before
-            // that boundary in this frame's immutable batch.
-            DwmFlush();
-            while (m_captureQueue.TryPop(&command)) {
-                while (!stopToken.stop_requested() &&
-                       !m_frameQueue.TryPush(command)) {
-                    std::this_thread::yield();
-                }
-                if (stopToken.stop_requested()) break;
-            }
-            if (!stopToken.stop_requested()) RequestFrame();
+            // Publish immediately. The UI thread, not DWM, owns the frame
+            // boundary: WM_SUBFRAME_NAV_READY only schedules a paint, and
+            // OnPaint snapshots every command published before that frame.
+            RequestFrame();
         }
     }
 
@@ -9320,7 +9302,6 @@ SKIP_EDGE_NAV:;
     }
 
     case WM_SUBFRAME_NAV_READY:
-        g_subframeNavigation.DrainOnFrame(hwnd);
         RequestRepaint(PaintLayer::Image | PaintLayer::Dynamic);
         return 0;
 
@@ -13886,75 +13867,11 @@ void Navigate(HWND hwnd, int direction) {
     }
 }
 
-static void FlushBufferedNavigation(HWND hwnd, int delta) {
-    if (delta == 0) return;
-
-    // These modes have multi-pane or cross-folder transitions whose commands
-    // are not algebraically collapsible. Preserve their exact FIFO semantics.
-    if (IsCompareModeActive() ||
-        g_runtime.NavTraverse ||
-        g_pairCompareSession) {
-        const int direction = delta > 0 ? 1 : -1;
-        for (int remaining = std::abs(delta);
-             remaining > 0;
-             --remaining) {
-            Navigate(hwnd, direction);
-        }
-        return;
-    }
-
-    auto& pane = GetPaneContext(PaneSlot::Primary);
-    auto& navigator = pane.navigator;
-    const int count = static_cast<int>(navigator.Count());
-    if (count <= 0 || !CheckUnsavedChanges(hwnd)) return;
-
-    const int current = navigator.Index();
-    if (current < 0 || current >= count) return;
-
-    int64_t target = static_cast<int64_t>(current) + delta;
-    const bool crossedBoundary = target < 0 || target >= count;
-    if (g_runtime.NavLoop) {
-        target %= count;
-        if (target < 0) target += count;
-    } else {
-        target = std::clamp<int64_t>(target, 0, count - 1);
-    }
-
-    const int targetIndex = static_cast<int>(target);
-    if (targetIndex == current) {
-        if (!g_runtime.NavLoop && crossedBoundary) {
-            g_osd.Show(
-                hwnd,
-                std::wstring(
-                    delta > 0
-                        ? AppStrings::OSD_LastImage
-                        : AppStrings::OSD_FirstImage),
-                false);
-        }
-        return;
-    }
-
-    navigator.SetIndex(targetIndex);
-    const std::wstring path = navigator.GetFile(targetIndex);
-    if (path.empty()) return;
-
-    pane.editState.Reset();
-    pane.view.Reset();
-    const QuickView::BrowseDirection browseDirection =
-        delta > 0
-            ? QuickView::BrowseDirection::FORWARD
-            : QuickView::BrowseDirection::BACKWARD;
-
-    if (crossedBoundary && g_runtime.NavLoop) {
-        wchar_t buffer[256];
-        swprintf_s(
-            buffer, L"[Loop] %d / %d", targetIndex + 1, count);
-        g_osd.Show(hwnd, buffer, false);
-    }
-    LoadImageAsync(hwnd, path, true, browseDirection);
-}
 
 void OnPaint(HWND hwnd) {
+    // Snapshot pending navigation before any state update or rendering. New
+    // input arriving during this paint remains pending for the next frame.
+    g_subframeNavigation.DrainOnFrame(hwnd);
     static LARGE_INTEGER lastTick = {};
     static LARGE_INTEGER freq = {};
     if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);

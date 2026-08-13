@@ -1516,7 +1516,12 @@ bool ImageEngine::ScheduleJob(int index, QuickView::Priority pri) {
          }
     }
     
-    if (info.type == CImageLoader::ImageType::TypeA_Sprint) {
+    // AVIF decode is CPU-heavy even below the generic 4 MP Sprint threshold.
+    // A serial FastLane leaves seven prefetched frames queued while HeavyLane
+    // sits idle. Spread AVIF lookahead across the bounded HeavyLane pool.
+    const bool useParallelPrefetch = (fmtUpper == L"AVIF");
+    if (info.type == CImageLoader::ImageType::TypeA_Sprint &&
+        !useParallelPrefetch) {
         {
             std::lock_guard lock(m_pendingMutex);
             if (!m_pendingPaths.insert(path).second) return false;
@@ -1526,7 +1531,8 @@ bool ImageEngine::ScheduleJob(int index, QuickView::Priority pri) {
             ComputePathHash(path),
             m_targetHdrHeadroomStops.load(std::memory_order_relaxed));
         return true;
-    } else if (info.type == CImageLoader::ImageType::TypeB_Heavy) {
+    } else if (info.type == CImageLoader::ImageType::TypeB_Heavy ||
+               useParallelPrefetch) {
         const ImageID pathId = ComputePathHash(path);
         if (m_heavyPool->HasStandardWork(pathId, PaneSlot::Primary)) return false;
         {

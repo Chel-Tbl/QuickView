@@ -7472,8 +7472,11 @@ static HRESULT Load(const uint8_t *data, size_t size, const DecodeContext &ctx,
   }
 
   decoder->strictFlags = AVIF_STRICT_DISABLED;
-  const unsigned int threads = std::thread::hardware_concurrency();
-  decoder->maxThreads = threads > 0 ? threads : 4;
+  // HeavyLane supplies up to eight independent AVIF jobs. Bound nested codec
+  // parallelism so one lookahead window cannot request 8 × all logical CPUs.
+  const unsigned int hardwareThreads =
+      (std::max)(1u, std::thread::hardware_concurrency());
+  decoder->maxThreads = (std::min)(8u, hardwareThreads);
 
   avifResult avifHr = avifDecoderSetIOMemory(decoder, data, size);
   if (avifHr != AVIF_RESULT_OK) {
