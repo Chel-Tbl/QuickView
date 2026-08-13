@@ -508,8 +508,8 @@ struct AppConfig {
     int UpdateChannel = 0;              // 0=Stable, 1=Pre-release
     bool NavLoop = true;                // Loop at limits (Global or Folder)
     bool NavTraverse = false;           // Reach outside current folder (Subfolders)
-    int SortOrder = 0;                  // 0=Auto(Name), 1=Name, 2=Modified, 3=DateTaken, 4=Size, 5=Type
-    bool SortDescending = false;
+    int SortOrder = 2;                  // 0=Auto(Name), 1=Name, 2=Modified, 3=DateTaken, 4=Size, 5=Type
+    bool SortDescending = true;
     bool SortArchivesByNameAscending = true;
     bool ConfirmDelete = true;
     bool PortableMode = false;
@@ -953,8 +953,8 @@ struct RuntimeConfig {
     // Navigation & Sort Session Overrides
     bool NavLoop = true;          // Sync from AppConfig
     bool NavTraverse = false;     // Sync from AppConfig
-    int SortOrder = 0;            // Sync from AppConfig
-    bool SortDescending = false;  // Sync from AppConfig
+    int SortOrder = 2;            // Sync from AppConfig
+    bool SortDescending = true;   // Sync from AppConfig
 
     // Soft Proofing (Temporary Session Flags)
     bool EnableSoftProofing = false;

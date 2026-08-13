@@ -4725,8 +4725,8 @@ void LoadConfig() {
         g_config.NavTraverse = GetPrivateProfileIntW(L"General", L"NavTraverse", 0, iniPath.c_str()) != 0;
     }
 
-    g_config.SortOrder = GetPrivateProfileIntW(L"General", L"SortOrder", 0, iniPath.c_str());
-    g_config.SortDescending = GetPrivateProfileIntW(L"General", L"SortDescending", 0, iniPath.c_str()) != 0;
+    g_config.SortOrder = GetPrivateProfileIntW(L"General", L"SortOrder", 2, iniPath.c_str());
+    g_config.SortDescending = GetPrivateProfileIntW(L"General", L"SortDescending", 1, iniPath.c_str()) != 0;
     g_config.SortArchivesByNameAscending = GetPrivateProfileIntW(L"General", L"SortArchivesByNameAscending", 1, iniPath.c_str()) != 0;
     g_config.ConfirmDelete = GetPrivateProfileIntW(L"General", L"ConfirmDelete", 1, iniPath.c_str()) != 0;
     g_config.PortableMode = GetPrivateProfileIntW(L"General", L"PortableMode", 0, iniPath.c_str()) != 0;
