@@ -158,9 +158,9 @@ public:
   // --- NEW: Raw Thumbnail Data (Zero-Copy flow) ---
   struct ThumbData {
     std::vector<uint8_t> pixels; // Raw BGRA (Compatible with PBGRA/BGRX)
-    int width;
-    int height;
-    int stride;
+    int width = 0;
+    int height = 0;
+    int stride = 0;
     bool isValid = false;
 
     // Metadata for Hover

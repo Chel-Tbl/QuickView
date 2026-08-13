@@ -37,6 +37,15 @@ unsigned GetPhysicalProcessorCount() {
     }
     return (std::max)(1u, coreCount);
 }
+bool IsThumbnailAdequate(const CImageLoader::ThumbData& data,
+                         int requestedSize) {
+    const int decodedCropAxis = (std::min)(data.width, data.height);
+    if (decodedCropAxis >= requestedSize) return true;
+    const int intrinsicCropAxis =
+        (std::min)(data.origWidth, data.origHeight);
+    return intrinsicCropAxis > 0 && decodedCropAxis >= intrinsicCropAxis;
+}
+
 bool TryLoadCachedFrame(const std::wstring& path, int targetSize,
                         CImageLoader::ThumbData& out) {
     if (!g_pImageEngine || targetSize <= 0) return false;
@@ -155,9 +164,17 @@ ComPtr<ID2D1Bitmap> ThumbnailManager::GetThumbnail(
         TouchLRU(imageId);
         const D2D1_SIZE_F size = itL2->second->GetSize();
         if (needsRequest) {
-            *needsRequest =
-                (std::min)(size.width, size.height) + 0.5f <
+            bool adequate =
+                (std::min)(size.width, size.height) + 0.5f >=
                 static_cast<float>(requestedSize);
+            if (!adequate) {
+                if (auto raw = m_l1Cache.find(imageId);
+                    raw != m_l1Cache.end()) {
+                    adequate = IsThumbnailAdequate(
+                        raw->second, requestedSize);
+                }
+            }
+            *needsRequest = !adequate;
         }
         return itL2->second;
     }
@@ -169,8 +186,7 @@ ComPtr<ID2D1Bitmap> ThumbnailManager::GetThumbnail(
 
         if (needsRequest) {
             *needsRequest =
-                (std::min)(itL1->second.width, itL1->second.height) <
-                requestedSize;
+                !IsThumbnailAdequate(itL1->second, requestedSize);
         }
 
         ComPtr<ID2D1Bitmap> bmp;
@@ -285,15 +301,15 @@ void ThumbnailManager::TouchLRU(size_t imageId) {
         m_lruList.splice(m_lruList.begin(), m_lruList, it->second);
     }
 }
-void ThumbnailManager::StoreDecodedThumbnail(
+bool ThumbnailManager::StoreDecodedThumbnail(
     size_t imageId, CImageLoader::ThumbData&& data) {
     std::lock_guard<std::mutex> lock(m_cacheMutex);
 
     if (auto existing = m_l1Cache.find(imageId);
         existing != m_l1Cache.end() && !existing->second.isFailed &&
-        (std::min)(existing->second.width, existing->second.height) >
+        (std::min)(existing->second.width, existing->second.height) >=
             (std::min)(data.width, data.height)) {
-        return;
+        return false;
     }
     if (auto existing = m_l1Cache.find(imageId);
         existing != m_l1Cache.end()) {
@@ -310,6 +326,7 @@ void ThumbnailManager::StoreDecodedThumbnail(
     const size_t size = data.pixels.size();
     m_l1Cache[imageId] = std::move(data);
     AddToLRU(imageId, size);
+    return true;
 }
 
 void ThumbnailManager::FinishPendingTask(const Task& task) {
@@ -358,8 +375,14 @@ void ThumbnailManager::WorkerLoopFast() {
             data.pixels = {0x80, 0x80, 0x80, 0xFF};
             data.loaderName = L"Failure Placeholder";
         }
+        bool stored = false;
         if (data.isValid && task.generation == m_currentGeneration) {
-            StoreDecodedThumbnail(task.imageId, std::move(data));
+            stored = StoreDecodedThumbnail(task.imageId, std::move(data));
+        }
+        // Clear pending before waking the UI. A higher-size request made by
+        // that paint must be admitted rather than lost behind this task.
+        FinishPendingTask(task);
+        if (stored) {
             PostMessage(m_hwnd, WM_THUMB_KEY_READY, (WPARAM)task.imageId, 0);
         }
         FinishPendingTask(task);
@@ -404,11 +427,14 @@ void ThumbnailManager::WorkerLoopSlow() {
             data.pixels = {0x80, 0x80, 0x80, 0xFF};
             data.loaderName = L"Failure Placeholder (Archive)";
         }
+        bool stored = false;
         if (data.isValid && task.generation == m_currentGeneration) {
-            StoreDecodedThumbnail(task.imageId, std::move(data));
-            PostMessage(m_hwnd, WM_THUMB_KEY_READY, (WPARAM)task.imageId, 0);
+            stored = StoreDecodedThumbnail(task.imageId, std::move(data));
         }
         FinishPendingTask(task);
+        if (stored) {
+            PostMessage(m_hwnd, WM_THUMB_KEY_READY, (WPARAM)task.imageId, 0);
+        }
     }
     if (SUCCEEDED(coInitHr)) CoUninitialize();
 }
@@ -420,18 +446,24 @@ void ThumbnailManager::QueueRequest(size_t imageId, LPCWSTR path,
         std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
         if (auto raw = m_l1Cache.find(imageId); raw != m_l1Cache.end()) {
             if (raw->second.isFailed ||
-                (std::min)(raw->second.width, raw->second.height) >=
-                    requestedSize) {
+                IsThumbnailAdequate(raw->second, requestedSize)) {
                 return;
             }
         }
         if (auto bitmap = m_l2Cache.find(imageId);
             bitmap != m_l2Cache.end()) {
             const D2D1_SIZE_F size = bitmap->second->GetSize();
-            if ((std::min)(size.width, size.height) + 0.5f >=
-                static_cast<float>(requestedSize)) {
-                return;
+            bool adequate =
+                (std::min)(size.width, size.height) + 0.5f >=
+                static_cast<float>(requestedSize);
+            if (!adequate) {
+                if (auto raw = m_l1Cache.find(imageId);
+                    raw != m_l1Cache.end()) {
+                    adequate = IsThumbnailAdequate(
+                        raw->second, requestedSize);
+                }
             }
+            if (adequate) return;
         }
     }
 

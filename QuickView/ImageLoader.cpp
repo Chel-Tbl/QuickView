@@ -4203,6 +4203,10 @@ HRESULT CImageLoader::LoadThumbnail(LPCWSTR filePath, int targetSize,
   // 0. Highest Priority: Windows Shell Thumbnail Cache (Insanely fast for
   // pre-cached heavy RAWs)
   if (SUCCEEDED(LoadShellThumbnail(filePath, targetSize, pData))) {
+    // Shell cache buckets can return 768px for a 256px request. Compact the
+    // CPU/GPU cache to the requested crop axis or one viewport exceeds 512MB
+    // and evicts itself forever.
+    DownscaleThumbDataIfNeeded(pData, targetSize);
     return S_OK;
   }
   const ImageHeaderInfo headerInfo = PeekHeader(filePath);
@@ -11884,16 +11888,21 @@ HRESULT CImageLoader::LoadThumbAVIF_Proxy(const uint8_t *data, size_t size,
 
   if (targetSize > 0 &&
       (std::min)(origW, origH) > targetSize) {
-    const float ratio =
-        static_cast<float>(targetSize) /
-        static_cast<float>((std::min)(origW, origH));
+    const int cropAxis = (std::min)(origW, origH);
+    const double ratio = static_cast<double>(targetSize) /
+                         static_cast<double>(cropAxis);
 
-    uint32_t newW = (uint32_t)(origW * ratio);
-    uint32_t newH = (uint32_t)(origH * ratio);
-    if (newW < 1)
-      newW = 1;
-    if (newH < 1)
-      newH = 1;
+    uint32_t newW =
+        (std::max)(1u, static_cast<uint32_t>(std::ceil(origW * ratio)));
+    uint32_t newH =
+        (std::max)(1u, static_cast<uint32_t>(std::ceil(origH * ratio)));
+    // Floating-point products near an integer can round below target. Pin the
+    // crop axis so cache adequacy cannot trigger an endless target-1 decode.
+    if (origW <= origH) {
+      newW = static_cast<uint32_t>(targetSize);
+    } else {
+      newH = static_cast<uint32_t>(targetSize);
+    }
 
     // Perform scaling in YUV domain BEFORE RGB conversion
     result = avifImageScale(decoder->image, newW, newH, &decoder->diag);

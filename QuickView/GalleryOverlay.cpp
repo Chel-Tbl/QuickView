@@ -175,6 +175,9 @@ void GalleryOverlay::SetMode(GalleryMode mode) {
     if (m_mode == mode) return;
     m_mode = mode;
     m_targetGridProgress = (mode == GalleryMode::FullGrid) ? 1.0f : 0.0f;
+    if (mode == GalleryMode::FullGrid) {
+        m_needsEnsureVisible = true;
+    }
     m_expandHoverTimer = 0.0f;
     m_bottomHintHover = false;
     RequestRepaint(QuickView::PaintLayer::Gallery);
@@ -502,7 +505,8 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
     bool sizeChanged = (m_lastSize.width != size.width || m_lastSize.height != size.height);
     m_lastSize = size;
     if (sizeChanged && m_selectedIndex >= 0) {
-        EnsureVisible(m_selectedIndex, size);
+        // Layout-dependent geometry is computed below; defer until it is fresh.
+        m_needsEnsureVisible = true;
     }
     
     float galleryH = GetVisualHeight(size.height);
@@ -652,8 +656,7 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
     D2D1_MATRIX_3X2_F originalTransform;
     pDC->GetTransform(&originalTransform);
     
-    // 3. Layout calculation & Interpolation
-    // 3. Layout calculation & Interpolation
+    // 3. Layout calculation & interpolation
     int gridCols = m_cols;
     if (gridCols < 1) gridCols = 1;
     
@@ -669,14 +672,17 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
     m_cellHeight = gridCellH;
     
     int gridRows = (int)((count + gridCols - 1) / gridCols);
-    float barPadding = (m_gridProgress > 0.5f) ? BOTTOM_BAR_HEIGHT * scale : 0.0f;
+    const float barPadding =
+        (m_gridProgress > 0.5f) ? BOTTOM_BAR_HEIGHT * scale : 0.0f;
+    const float contentBottom = galleryH - barPadding;
     m_maxScroll = std::max(0.0f, currentPadding * 2 + gridRows * (gridCellH + currentGap) - currentGap + barPadding - size.height);
     
     float filmLeftMargin = FILM_LEFT_MARGIN * scale;
     m_maxScrollLeft = std::max(0.0f, filmLeftMargin * 2.0f + count * (filmCellW + currentGap) - currentGap - size.width);
     
     // If newly opened or size changed, ensure selection is visible (centered)
-    if (m_needsEnsureVisible && m_selectedIndex >= 0) {
+    if (m_needsEnsureVisible && m_selectedIndex >= 0 &&
+        (m_mode != GalleryMode::FullGrid || m_gridProgress > 0.001f)) {
         EnsureVisible(m_selectedIndex, size, false);
         m_needsEnsureVisible = false;
     }
@@ -685,26 +691,55 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
     m_scrollTop = std::clamp(m_scrollTop, 0.0f, m_maxScroll);
     m_scrollLeft = std::clamp(m_scrollLeft, 0.0f, m_maxScrollLeft);
     
-    // Virtualize the full grid by row. Besides avoiding 56k rectangle checks
-    // per paint, this gives the thumbnail scheduler the exact live viewport.
+    // Virtualize by the exact interpolated row geometry. Inclusive bounds
+    // match drawItem's cull, so partial rows at both viewport edges are kept.
     int startIdx = 0;
     int endIdx = static_cast<int>(count) - 1;
     int centerIdx = (std::max)(0, m_selectedIndex);
+    int firstRow = 0;
+    int lastRow = gridRows - 1;
+    int prefetchStart = startIdx;
+    int prefetchEnd = endIdx;
     if (m_mode == GalleryMode::FullGrid) {
-        const float rowStep = gridCellH + gridGap;
-        const int firstRow = (std::max)(
-            0, static_cast<int>(std::ceil(
-                   (m_scrollTop - currentPadding - gridCellH) / rowStep)));
-        const int lastRow = (std::min)(
-            gridRows - 1, static_cast<int>(std::floor(
-                              (m_scrollTop + galleryH - currentPadding) /
-                              rowStep)));
+        const float filmPadding = filmGap + 3.0f * scale;
+        const float cellHeight =
+            filmCellW + (gridCellH - filmCellW) * m_gridProgress;
+        const float rowOrigin =
+            filmPadding +
+            (currentPadding - m_scrollTop - filmPadding) * m_gridProgress;
+        const float rowStep =
+            (gridCellH + currentGap) * m_gridProgress;
+        if (rowStep > 0.001f) {
+            firstRow = std::clamp(
+                static_cast<int>(
+                    std::ceil((-rowOrigin - cellHeight) / rowStep)),
+                0, gridRows - 1);
+            lastRow = std::clamp(
+                static_cast<int>(
+                    std::floor((contentBottom - rowOrigin) / rowStep)),
+                firstRow, gridRows - 1);
+        }
         startIdx = (std::min)(endIdx, firstRow * gridCols);
         endIdx = (std::min)(endIdx, (lastRow + 1) * gridCols - 1);
         centerIdx = startIdx + (endIdx - startIdx) / 2;
+
+        // Retain complete adjacent rows in the work queue. Previously the
+        // visible-only priority range discarded this lookahead on each paint.
+        if (m_gridProgress >= 0.999f) {
+            const int prefetchRows = (std::max)(1, 64 / gridCols);
+            prefetchStart =
+                (std::max)(0, (firstRow - prefetchRows) * gridCols);
+            prefetchEnd = (std::min)(
+                static_cast<int>(count) - 1,
+                (lastRow + prefetchRows + 1) * gridCols - 1);
+        } else {
+            prefetchStart = startIdx;
+            prefetchEnd = endIdx;
+        }
     }
 
-    m_pThumbMgr->UpdateOptimizedPriority(startIdx, endIdx, centerIdx);
+    m_pThumbMgr->UpdateOptimizedPriority(
+        prefetchStart, prefetchEnd, centerIdx);
     
     // Clip drawing area to the visual panel area
     pDC->PushAxisAlignedClip(panelRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -712,7 +747,7 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
     // Clip thumbnails to scrollable region (to avoid overlapping Pin button and arrows)
     // Add scaled buffer on left/right to ensure selection DodgerBlue outline is not clipped
     float currentLeftMargin = filmLeftMargin + (currentPadding - filmLeftMargin) * m_gridProgress;
-    D2D1_RECT_F thumbsClip = D2D1::RectF(currentLeftMargin - 6.0f * scale, 0.0f, size.width - currentLeftMargin + 6.0f * scale, galleryH);
+    D2D1_RECT_F thumbsClip = D2D1::RectF(currentLeftMargin - 6.0f * scale, 0.0f, size.width - currentLeftMargin + 6.0f * scale, contentBottom);
     pDC->PushAxisAlignedClip(thumbsClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     
     // Single item draw lambda to keep Z-Order multipass loops clean and hyper-efficient
@@ -720,7 +755,8 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
         D2D1_RECT_F cellRect = GetItemRect(i, size.width);
         
         // Frustum Culling check
-        if (cellRect.right < 0.0f || cellRect.left > size.width || cellRect.bottom < 0.0f || cellRect.top > galleryH) {
+        if (cellRect.right < 0.0f || cellRect.left > size.width ||
+            cellRect.bottom < 0.0f || cellRect.top > contentBottom) {
             return; // Skip out of bounds thumbnails
         }
         
@@ -852,28 +888,22 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
         drawItem(m_hoverIndex);
     }
 
-    // Once the visible jobs are queued, warm one adjacent viewport on both
-    // sides. Visible priorities always win; the persistent Shell cache makes
-    // ordinary follow-on scrolling and later launches effectively instant.
-    if (m_mode == GalleryMode::FullGrid) {
-        const int viewportSpan = endIdx - startIdx + 1;
-        // Keep speculation bounded: two adjacent screens, at most 128 items.
-        const int prefetchSpan = (std::min)(viewportSpan, 64);
-        const int prefetchStart = (std::max)(0, startIdx - prefetchSpan);
-        const int prefetchEnd = (std::min)(
-            static_cast<int>(count) - 1, endIdx + prefetchSpan);
-        if (prefetchStart != m_thumbnailPrefetchStart ||
-            prefetchEnd != m_thumbnailPrefetchEnd) {
-            m_thumbnailPrefetchStart = prefetchStart;
-            m_thumbnailPrefetchEnd = prefetchEnd;
-            const int prefetchSize = (std::max)(
-                256, static_cast<int>(std::ceil(gridCellW * 2.0f)));
-            for (int i = prefetchStart; i <= prefetchEnd; ++i) {
-                if (i >= startIdx && i <= endIdx) continue;
-                m_pThumbMgr->QueueRequest(
-                    m_pNav->GetImageID(i), m_pNav->GetFile(i).c_str(), i,
-                    prefetchSize);
-            }
+    // Once visible jobs are queued, warm complete adjacent rows on both
+    // sides. The retained priority range prevents later repaints from
+    // cancelling this bounded lookahead.
+    if (m_mode == GalleryMode::FullGrid &&
+        m_gridProgress >= 0.999f &&
+        (prefetchStart != m_thumbnailPrefetchStart ||
+         prefetchEnd != m_thumbnailPrefetchEnd)) {
+        m_thumbnailPrefetchStart = prefetchStart;
+        m_thumbnailPrefetchEnd = prefetchEnd;
+        const int prefetchSize = (std::max)(
+            256, static_cast<int>(std::ceil(gridCellW * 2.0f)));
+        for (int i = prefetchStart; i <= prefetchEnd; ++i) {
+            if (i >= startIdx && i <= endIdx) continue;
+            m_pThumbMgr->QueueRequest(
+                m_pNav->GetImageID(i), m_pNav->GetFile(i).c_str(), i,
+                prefetchSize);
         }
     }
     
@@ -1413,11 +1443,14 @@ bool GalleryOverlay::OnKeyDown(UINT key) {
         case VK_UP:
             if (m_mode == GalleryMode::FullGrid) {
                 m_selectedIndex = std::max(0, m_selectedIndex - m_cols);
+                EnsureVisible(m_selectedIndex, m_lastSize, true);
             }
             break;
         case VK_DOWN:
             if (m_mode == GalleryMode::FullGrid) {
-                m_selectedIndex = std::min((int)m_pNav->Count() - 1, m_selectedIndex + m_cols);
+                m_selectedIndex = std::min(
+                    (int)m_pNav->Count() - 1, m_selectedIndex + m_cols);
+                EnsureVisible(m_selectedIndex, m_lastSize, true);
             }
             break;
     }
@@ -1921,16 +1954,19 @@ void GalleryOverlay::EnsureVisible(int index, const D2D1_SIZE_F& size, bool smoo
     float currentGap = filmGap + (gridGap - filmGap) * m_gridProgress;
     
     if (m_mode == GalleryMode::FullGrid) {
-        if (m_cellHeight <= 0.0f) return;
-        int row = index / m_cols;
-        float itemTop = currentPadding + row * (m_cellHeight + currentGap);
-        float itemBottom = itemTop + m_cellHeight;
-        
-        if (itemTop < m_scrollTop) {
-            m_scrollTop = itemTop;
-        } else if (itemBottom > m_scrollTop + size.height) {
-            m_scrollTop = itemBottom - size.height;
+        if (m_cellHeight <= 0.0f || m_gridProgress <= 0.001f) return;
+        const float barPadding =
+            (m_gridProgress > 0.5f) ? BOTTOM_BAR_HEIGHT * scale : 0.0f;
+        const float viewportBottom =
+            GetVisualHeight(size.height) - barPadding;
+        const D2D1_RECT_F itemRect = GetItemRect(index, size.width);
+        if (itemRect.top < 0.0f) {
+            m_scrollTop += itemRect.top / m_gridProgress;
+        } else if (itemRect.bottom > viewportBottom) {
+            m_scrollTop +=
+                (itemRect.bottom - viewportBottom) / m_gridProgress;
         }
+        m_scrollTop = std::clamp(m_scrollTop, 0.0f, m_maxScroll);
     } else {
         float cellW = GetFilmCellSize() * scale;
         float filmLeftMargin = FILM_LEFT_MARGIN * scale;

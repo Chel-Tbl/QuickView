@@ -135,7 +135,7 @@ private:
     
     void EvictLRU();
     void AddToLRU(size_t imageId, size_t size);
-    void StoreDecodedThumbnail(size_t imageId, CImageLoader::ThumbData&& data);
+    bool StoreDecodedThumbnail(size_t imageId, CImageLoader::ThumbData&& data);
     void TouchLRU(size_t imageId);
 
     const size_t MAX_CACHE_SIZE = 512 * 1024 * 1024; // [v6.0.6] Increased to 512MB for 4K/8K assets
