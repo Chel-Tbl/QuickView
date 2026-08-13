@@ -25,25 +25,14 @@ namespace QuickView {
             m_size = (size_t)size.QuadPart;
 
             if (m_size > 0) {
-                // [Stability Optimization] For files under 128MB (99.9% of normal PNGs/JPEGs),
-                // we load them entirely into memory vector to prevent STATUS_IN_PAGE_ERROR (0xc0000006) 
-                // caused by asynchronous file locking/deletion by antivirus, DLP or compressor software.
-                if (m_size < 128 * 1024 * 1024) {
-                    m_buffer.resize(m_size);
-                    DWORD bytesRead = 0;
-                    if (ReadFile(m_hFile, m_buffer.data(), (DWORD)m_size, &bytesRead, nullptr) && bytesRead == m_size) {
-                        m_ptr = m_buffer.data();
-                    } else {
-                        m_buffer.clear();
-                        m_size = 0;
-                        m_ptr = nullptr;
-                    }
-                } else {
-                    // For massive files (>128MB), map them to preserve address space & RAM
-                    m_hMap = CreateFileMappingW(m_hFile, nullptr, PAGE_READONLY, 0, 0, nullptr);
-                    if (m_hMap) {
-                        m_ptr = static_cast<const uint8_t*>(MapViewOfFile(m_hMap, FILE_MAP_READ, 0, 0, 0));
-                    }
+                // Mapping is constant-time with respect to file size. Pixel
+                // pages are faulted by the background decoder instead of
+                // synchronously reading the whole AVIF on the UI thread.
+                m_hMap = CreateFileMappingW(
+                    m_hFile, nullptr, PAGE_READONLY, 0, 0, nullptr);
+                if (m_hMap) {
+                    m_ptr = static_cast<const uint8_t*>(
+                        MapViewOfFile(m_hMap, FILE_MAP_READ, 0, 0, 0));
                 }
             }
         }

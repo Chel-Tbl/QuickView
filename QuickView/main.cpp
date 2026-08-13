@@ -10288,15 +10288,16 @@ SKIP_EDGE_NAV:;
             return 0;
         }
 
-        if (!GetPaneContext(PaneSlot::Primary).resource) return 0;
-
         if (shouldNavigate) {
-            int direction = (delta > 0.0f) ? -1 : 1;
-            if (delta != 0.0f && CheckUnsavedChanges(hwnd)) {
+            const int direction = (delta > 0.0f) ? -1 : 1;
+            if (delta != 0.0f) {
                 Navigate(hwnd, direction);
             }
             return 0;
         }
+
+        // Zoom needs a drawable frame; navigation does not.
+        if (!GetPaneContext(PaneSlot::Primary).resource) return 0;
 
         // Magnetic Snap Time Lock is now handled inside CalculateTargetZoom
         
@@ -12863,25 +12864,17 @@ static FireAndForget LoadPhase1WicFallbackAsync(
 }
 
 static void PrimePhase1Placeholder(HWND hwnd, const std::wstring& path, ImageID imageId) {
+    // Normal images keep the previous frame until the requested frame or a
+    // cache hit is ready. Do not synchronously probe headers for a placeholder
+    // that will never be shown.
+    if (!g_isNavigatingToTitan) {
+        QV_LOG("Phase1_Route", TraceLoggingString("NonTitan Skip", "Action"));
+        return;
+    }
+
     UINT sourceW = 0;
     UINT sourceH = 0;
     TryReadPhase1DimensionsFromHeader(path, &sourceW, &sourceH);
-
-    // [Phase 1 Optimization]
-    // Non-Titan decoding is fast enough (<100ms typical) that showing a ~256px
-    // Shell cached thumbnail as placeholder causes visible flicker instead of
-    // helping perception. Only use skeleton placeholder so the full decode
-    // (>8192px or >50MP) still benefit
-    // from the placeholder chain because their decode can take 1-5 seconds.
-    {
-        bool isTitan = g_isNavigatingToTitan;
-        if (!isTitan) {
-            QV_LOG("Phase1_Route", TraceLoggingString("NonTitan Skip", "Action"));
-            // [Fix] Do not apply skeleton. Leave current image intact for visual continuity.
-            // Do not update metadata early to avoid DComp scaling artifacts on the old layer.
-            return; // No Shell/WIC extraction and NO skeleton for non-Titan images
-        }
-    }
 
     // Shell thumbnail: multi-level cache-only extraction (no disk decode, safe for UI thread)
     std::shared_ptr<QuickView::RawImageFrame> shellFrame;
@@ -13158,15 +13151,18 @@ void StartNavigation(HWND hwnd, std::wstring path, [[maybe_unused]] bool showOSD
         GetPaneContext(PaneSlot::Primary).editState.OriginalFilePath = path;
     }
     
- // [Fix] Reliable Titan Detection
-    // Use the robust Phase 2 logic (which checks exact dimensions + file size) 
-    // to determine if we should show the Titan decode progress bar.
-    int idx = GetPaneContext(PaneSlot::Primary).navigator.FindIndex(path);
+    // A cached frame is known non-blockingly. Skip repeated header parsing;
+    // DispatchImageLoad will deliver it without touching the source file.
+    const int idx = GetPaneContext(PaneSlot::Primary).navigator.Index();
     uintmax_t fileSize = 0;
-    if (idx != -1) {
+    if (idx >= 0 &&
+        idx < static_cast<int>(GetPaneContext(PaneSlot::Primary).navigator.Count())) {
         fileSize = GetPaneContext(PaneSlot::Primary).navigator.GetFileSize(idx);
     }
-    g_isNavigatingToTitan = ShouldUsePhase2TitanDebounce(path, fileSize);
+    const bool cachedNavigation =
+        g_imageEngine->GetCachedImage(path) != nullptr;
+    g_isNavigatingToTitan =
+        !cachedNavigation && ShouldUsePhase2TitanDebounce(path, fileSize);
     
     g_isCrossFading = false;
     g_ghostBitmap = nullptr; // Clear previous ghost
@@ -13217,7 +13213,7 @@ void StartNavigation(HWND hwnd, std::wstring path, [[maybe_unused]] bool showOSD
 // Phase 2 Kick: queue-drop debounce (Titan only)
     // (Moved fileSize lookup to top of StartNavigation)
 
-    if (ShouldUsePhase2TitanDebounce(path, fileSize)) {
+    if (g_isNavigatingToTitan) {
         EnqueuePhase2NavigationTask(hwnd, path, fileSize, idx, myToken, myImageId, dir);
     } else {
         DispatchNavigationToEngine(path, fileSize, myToken, idx, dir);
@@ -14891,7 +14887,7 @@ bool HandleHotkeyAction(HWND hwnd, HotkeyAction action) {
     case HotkeyAction::NavNext:
         if (alt && GetPaneContext(PaneSlot::Primary).resource.animator) {
             HandleAnimFrameStep(hwnd, true);
-        } else if (CheckUnsavedChanges(hwnd)) {
+        } else {
             Navigate(hwnd, 1);
         }
         return true;
@@ -14899,17 +14895,17 @@ bool HandleHotkeyAction(HWND hwnd, HotkeyAction action) {
     case HotkeyAction::NavPrev:
         if (alt && GetPaneContext(PaneSlot::Primary).resource.animator) {
             HandleAnimFrameStep(hwnd, false);
-        } else if (CheckUnsavedChanges(hwnd)) {
+        } else {
             Navigate(hwnd, -1);
         }
         return true;
 
     case HotkeyAction::NavFirst:
-        if (CheckUnsavedChanges(hwnd)) NavigateEdge(hwnd, false);
+        NavigateEdge(hwnd, false);
         return true;
 
     case HotkeyAction::NavLast:
-        if (CheckUnsavedChanges(hwnd)) NavigateEdge(hwnd, true);
+        NavigateEdge(hwnd, true);
         return true;
 
     case HotkeyAction::ZoomIn:

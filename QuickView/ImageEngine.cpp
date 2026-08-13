@@ -190,6 +190,39 @@ void ImageEngine::RequestFullDecode(const std::wstring& path, ImageID imageId, P
 
 // [Phase 2] Dispatcher Implementation
 void ImageEngine::DispatchImageLoad(const std::wstring& path, ImageID imageId, uintmax_t fileSize, PaneSlot targetSlot, uint64_t generationId) {
+    // Hot navigation must not touch disk. Prefetched normal frames already
+    // carry complete metadata and can be published directly from the cache.
+    if (m_forceRefresh.exchange(false)) {
+        InvalidateCache(path);
+    } else {
+        CImageLoader::ImageMetadata cachedMetadata;
+        auto cachedFrame = GetCachedImage(path, &cachedMetadata);
+        std::wstring cachedFormat = cachedMetadata.Format;
+        std::transform(
+            cachedFormat.begin(), cachedFormat.end(),
+            cachedFormat.begin(), ::towupper);
+        const uint64_t cachedPixels =
+            static_cast<uint64_t>(cachedMetadata.Width) *
+            static_cast<uint64_t>(cachedMetadata.Height);
+        const bool requiresDispatchState =
+            cachedFormat == L"JXL" ||
+            cachedFormat.contains(L"RAW") ||
+            cachedMetadata.Width > 8192 ||
+            cachedMetadata.Height > 8192 ||
+            cachedPixels > 50000000ULL;
+        if (cachedFrame && !requiresDispatchState) {
+            EngineEvent event;
+            event.type = EventType::FullReady;
+            event.filePath = path;
+            event.imageId = imageId;
+            event.targetSlot = targetSlot;
+            event.generationId = generationId;
+            event.rawFrame = std::move(cachedFrame);
+            event.metadata = std::move(cachedMetadata);
+            QueueEvent(std::move(event));
+            return;
+        }
+    }
     // 1. Peek Header
     CImageLoader::ImageHeaderInfo info = m_loader->PeekHeader(path.c_str());
 
@@ -212,10 +245,7 @@ void ImageEngine::DispatchImageLoad(const std::wstring& path, ImageID imageId, u
         }
     }
 
-    // [v9.0] Explicit Force Refresh (Toolbar Toggle)
-    if (m_forceRefresh.exchange(false)) {
-        InvalidateCache(path);
-    }
+    // Force refresh was consumed before the cache fast path above.
     
     // [Titan] Initialize Tile Scheduler
     // Threshold: > 8K in any dimension OR > 50MP total?
@@ -1402,19 +1432,23 @@ void ImageEngine::UpdateView(int currentIndex, QuickView::BrowseDirection dir) {
                 (currentIndex - distance + count) % count, priority});
         }
     } else {
-         // Directional Prefetch
-         int step = (dir == QuickView::BrowseDirection::BACKWARD) ? -1 : 1;
-         
-         // 3. Adjacent: High Priority
-         m_prefetchQueue.push_back({currentIndex + step, QuickView::Priority::High});
-         
-         // 5. Anti-regret: One in opposite direction
-         m_prefetchQueue.push_back({currentIndex - step, QuickView::Priority::Low});
-         
-         // 6. Look-ahead
-         for (int i = 2; i <= m_prefetchPolicy.lookAheadCount; ++i) {
-             m_prefetchQueue.push_back({currentIndex + step * i, QuickView::Priority::Idle});
-         }
+        const int step =
+            (dir == QuickView::BrowseDirection::BACKWARD) ? -1 : 1;
+
+        // Fill the physical eight-job budget with the active direction first.
+        // The opposite neighbor is useful only after the forward runway.
+        for (int distance = 1;
+             distance <= m_prefetchPolicy.lookAheadCount;
+             ++distance) {
+            const QuickView::Priority priority =
+                (distance == 1)
+                    ? QuickView::Priority::High
+                    : QuickView::Priority::Idle;
+            m_prefetchQueue.push_back(
+                {currentIndex + step * distance, priority});
+        }
+        m_prefetchQueue.push_back(
+            {currentIndex - step, QuickView::Priority::Low});
     }
     
     // Pump queue immediately
@@ -1782,8 +1816,13 @@ void ImageEngine::PumpPrefetch() {
         ++speculativeInFlight;
     }
 
+    // Header classification can parse container boxes. Bound it per UI turn;
+    // later PollState ticks continue filling the same physical work window.
+    constexpr int maxClassificationsPerPump = 2;
+    int classifications = 0;
     while (!m_prefetchQueue.empty() &&
-           speculativeInFlight < maxSpeculativeInFlight) {
+           speculativeInFlight < maxSpeculativeInFlight &&
+           classifications < maxClassificationsPerPump) {
         const auto task = m_prefetchQueue.front();
         m_prefetchQueue.pop_front();
         if (task.index < 0 ||
@@ -1797,6 +1836,7 @@ void ImageEngine::PumpPrefetch() {
             if (m_cache.count(path)) continue;
         }
 
+        ++classifications;
         if (ScheduleJob(task.index, task.priority)) {
             ++speculativeInFlight;
         }
