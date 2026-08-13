@@ -131,6 +131,9 @@ void GalleryOverlay::Open(int currentIndex, GalleryMode targetMode) {
     m_expandHoverTimer = 0.0f;
     m_isLButtonDown = false;
     m_dragMode = DragMode::None;
+    m_gridScrollbarHover = false;
+    m_gridScrollbarDragging = false;
+    m_gridScrollbarDragOffset = 0.0f;
     
     RequestRepaint(QuickView::PaintLayer::Gallery);
 }
@@ -141,6 +144,11 @@ void GalleryOverlay::Close(bool keepSelection) {
     m_mode = GalleryMode::Hidden;
     m_expandHoverTimer = 0.0f;
     m_gridSliderDragging = false;
+    if (m_gridScrollbarDragging && GetCapture() == m_hwnd) {
+        ReleaseCapture();
+    }
+    m_gridScrollbarDragging = false;
+    m_gridScrollbarHover = false;
     if (!keepSelection) {
         m_selectedIndex = -1;
     }
@@ -393,6 +401,40 @@ float GalleryOverlay::GetVisualHeight(float winH) const {
     float gridH = winH;
     float currentH = filmstripH + (gridH - filmstripH) * m_gridProgress;
     return currentH * m_transitionProgress;
+}
+
+bool GalleryOverlay::GetGridScrollbarGeometry(
+    D2D1_RECT_F& track, D2D1_RECT_F& thumb) const {
+    if (m_gridProgress <= 0.5f || m_maxScroll <= 0.0f ||
+        m_lastSize.width <= 0.0f || m_lastSize.height <= 0.0f) {
+        return false;
+    }
+
+    const float scale = g_uiScale > 0.0f ? g_uiScale : 1.0f;
+    const float galleryH = GetVisualHeight(m_lastSize.height);
+    const float top = 8.0f * scale;
+    const float bottom =
+        galleryH - BOTTOM_BAR_HEIGHT * scale - 8.0f * scale;
+    const float trackWidth = 8.0f * scale;
+    const float right = m_lastSize.width - 5.0f * scale;
+    if (bottom <= top) return false;
+
+    track = D2D1::RectF(right - trackWidth, top, right, bottom);
+    const float trackHeight = bottom - top;
+    const float viewportHeight =
+        (std::max)(1.0f, galleryH - BOTTOM_BAR_HEIGHT * scale);
+    const float contentHeight = viewportHeight + m_maxScroll;
+    const float thumbHeight = (std::min)(
+        trackHeight,
+        (std::max)(32.0f * scale,
+                   trackHeight * viewportHeight / contentHeight));
+    const float travel = trackHeight - thumbHeight;
+    const float normalized =
+        std::clamp(m_scrollTop / m_maxScroll, 0.0f, 1.0f);
+    const float thumbTop = top + travel * normalized;
+    thumb = D2D1::RectF(track.left, thumbTop, track.right,
+                       thumbTop + thumbHeight);
+    return true;
 }
 
 bool GalleryOverlay::HitTestArea(int x, int y, float winW, float winH) const {
@@ -994,6 +1036,44 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
             m_brushText->SetOpacity(1.0f);
         }
     }
+
+    // Full-grid vertical scrollbar. It stays visible whenever the content
+    // overflows; hover only increases contrast and width.
+    D2D1_RECT_F scrollTrack{};
+    D2D1_RECT_F scrollThumb{};
+    if (GetGridScrollbarGeometry(scrollTrack, scrollThumb)) {
+        const float radius = (scrollTrack.right - scrollTrack.left) * 0.5f;
+        const float scrollAlpha =
+            m_transitionProgress *
+            ((m_gridProgress - 0.5f) * 2.0f);
+
+        const D2D1_COLOR_F trackColor = isLight
+            ? D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.16f)
+            : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.18f);
+        m_brushOverlay->SetColor(trackColor);
+        m_brushOverlay->SetOpacity(scrollAlpha);
+        pDC->FillRoundedRectangle(
+            D2D1::RoundedRect(scrollTrack, radius, radius),
+            m_brushOverlay.Get());
+
+        if (m_gridScrollbarHover || m_gridScrollbarDragging) {
+            m_brushSelection->SetOpacity(scrollAlpha);
+            pDC->FillRoundedRectangle(
+                D2D1::RoundedRect(scrollThumb, radius, radius),
+                m_brushSelection.Get());
+        } else {
+            const D2D1_COLOR_F thumbColor = isLight
+                ? D2D1::ColorF(0.18f, 0.20f, 0.24f, 0.78f)
+                : D2D1::ColorF(0.88f, 0.90f, 0.96f, 0.78f);
+            m_brushText->SetColor(thumbColor);
+            m_brushText->SetOpacity(scrollAlpha);
+            pDC->FillRoundedRectangle(
+                D2D1::RoundedRect(scrollThumb, radius, radius),
+                m_brushText.Get());
+        }
+        m_brushText->SetOpacity(1.0f);
+        m_brushSelection->SetOpacity(1.0f);
+    }
     
     // 5. Left/Right Navigation Arrows Rendering (Circle-less Slim Tall Vector Arrows with Accent Color Highlight)
     if (m_gridProgress < 0.2f && g_config.NavIndicator == 0) {
@@ -1342,6 +1422,42 @@ bool GalleryOverlay::OnLButtonDown(int x, int y) {
     
     // Outside gallery area — ignore (including bottom handle zone)
     if (fy > galleryH + 16.0f * g_uiScale) return false;
+
+    // Full-grid scrollbar gets pointer priority over cells and the generic
+    // drag-to-pan gesture.
+    D2D1_RECT_F scrollTrack{};
+    D2D1_RECT_F scrollThumb{};
+    if (GetGridScrollbarGeometry(scrollTrack, scrollThumb)) {
+        const float hitSlop = 8.0f * g_uiScale;
+        const bool inTrack =
+            fx >= scrollTrack.left - hitSlop &&
+            fx <= scrollTrack.right + hitSlop &&
+            fy >= scrollTrack.top && fy <= scrollTrack.bottom;
+        if (inTrack) {
+            const bool inThumb =
+                fy >= scrollThumb.top && fy <= scrollThumb.bottom;
+            const float thumbHeight = scrollThumb.bottom - scrollThumb.top;
+            m_gridScrollbarDragOffset =
+                inThumb ? fy - scrollThumb.top : thumbHeight * 0.5f;
+            if (!inThumb) {
+                const float travel =
+                    (scrollTrack.bottom - scrollTrack.top) - thumbHeight;
+                if (travel > 0.0f) {
+                    const float thumbTop = std::clamp(
+                        fy - m_gridScrollbarDragOffset,
+                        scrollTrack.top,
+                        scrollTrack.bottom - thumbHeight);
+                    m_scrollTop = ((thumbTop - scrollTrack.top) / travel) *
+                                  m_maxScroll;
+                }
+            }
+            m_gridScrollbarDragging = true;
+            m_gridScrollbarHover = true;
+            if (m_hwnd) SetCapture(m_hwnd);
+            RequestRepaint(QuickView::PaintLayer::Gallery);
+            return true;
+        }
+    }
     
     // Check Pin button click (top-left corner) - only in filmstrip mode
     if (m_gridProgress < 0.2f) {
@@ -1483,6 +1599,38 @@ bool GalleryOverlay::OnMouseMove(int x, int y) {
     float fx = (float)x;
     float fy = (float)y;
     bool changed = false;
+
+    D2D1_RECT_F scrollTrack{};
+    D2D1_RECT_F scrollThumb{};
+    const bool hasScrollbar =
+        GetGridScrollbarGeometry(scrollTrack, scrollThumb);
+    bool scrollbarHover = false;
+    if (hasScrollbar) {
+        const float hitSlop = 8.0f * g_uiScale;
+        scrollbarHover =
+            fx >= scrollTrack.left - hitSlop &&
+            fx <= scrollTrack.right + hitSlop &&
+            fy >= scrollTrack.top && fy <= scrollTrack.bottom;
+    }
+    if (scrollbarHover != m_gridScrollbarHover) {
+        m_gridScrollbarHover = scrollbarHover;
+        changed = true;
+    }
+
+    if (m_gridScrollbarDragging && hasScrollbar) {
+        const float thumbHeight = scrollThumb.bottom - scrollThumb.top;
+        const float travel =
+            (scrollTrack.bottom - scrollTrack.top) - thumbHeight;
+        if (travel > 0.0f) {
+            const float thumbTop = std::clamp(
+                fy - m_gridScrollbarDragOffset,
+                scrollTrack.top,
+                scrollTrack.bottom - thumbHeight);
+            m_scrollTop =
+                ((thumbTop - scrollTrack.top) / travel) * m_maxScroll;
+        }
+        changed = true;
+    }
     
     // Update arrow hover states (filmstrip mode)
     if (m_gridProgress < 0.2f) {
@@ -1658,6 +1806,13 @@ bool GalleryOverlay::OnMouseMove(int x, int y) {
 bool GalleryOverlay::OnLButtonUp(int x, int y, int& outSelectedIndex) {
     if (!IsVisible()) return false;
     
+
+    if (m_gridScrollbarDragging) {
+        m_gridScrollbarDragging = false;
+        if (GetCapture() == m_hwnd) ReleaseCapture();
+        RequestRepaint(QuickView::PaintLayer::Gallery);
+        return true;
+    }
     // Finalize slider drag → persist to config
     if (m_gridSliderDragging) {
         m_gridSliderDragging = false;

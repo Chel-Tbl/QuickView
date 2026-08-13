@@ -8567,9 +8567,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
               if (g_gallery.OnMouseMove(pt.x, pt.y)) {
                   RequestRepaint(PaintLayer::Gallery);  // Only if hover changed
               }
-              // Change cursor to hand when hovering Pin button, navigation arrows or bottom expand handle
-              if (g_gallery.IsPinHovered() || g_gallery.IsBottomHintHovered() || 
-                  g_gallery.IsArrowLeftHovered() || g_gallery.IsArrowRightHovered()) {
+              // Interactive gallery controls advertise their pointer behavior.
+              if (g_gallery.IsGridScrollbarHovered()) {
+                  g_currentCursor = LoadCursor(nullptr, IDC_SIZENS);
+              } else if (g_gallery.IsPinHovered() ||
+                         g_gallery.IsBottomHintHovered() ||
+                         g_gallery.IsArrowLeftHovered() ||
+                         g_gallery.IsArrowRightHovered()) {
                   g_currentCursor = LoadCursor(nullptr, IDC_HAND);
               }
               

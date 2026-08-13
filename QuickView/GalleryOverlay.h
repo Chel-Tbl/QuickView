@@ -67,13 +67,18 @@ public:
   void TogglePin() { m_isPinned = !m_isPinned; }
   void SetPinned(bool pinned) { m_isPinned = pinned; }
   bool IsPinned() const { return m_isPinned; }
-  bool IsMouseLButtonDown() const { return m_isLButtonDown; }
+  bool IsMouseLButtonDown() const {
+    return m_isLButtonDown || m_gridScrollbarDragging;
+  }
 
   // Hover queries for cursor feedback
   bool IsPinHovered() const { return m_pinHover; }
   bool IsBottomHintHovered() const { return m_bottomHintHover; }
   bool IsArrowLeftHovered() const { return m_arrowLeftHover; }
   bool IsArrowRightHovered() const { return m_arrowRightHover; }
+  bool IsGridScrollbarHovered() const {
+    return m_gridScrollbarHover || m_gridScrollbarDragging;
+  }
 
   // Returns selected index when closed via Enter/Click
   int GetSelectedIndex() const { return m_selectedIndex; }
@@ -191,6 +196,11 @@ private:
   bool m_gridSliderDragging = false;
   bool m_gridAutoHover = false;
 
+  // Full-grid vertical scrollbar
+  bool m_gridScrollbarHover = false;
+  bool m_gridScrollbarDragging = false;
+  float m_gridScrollbarDragOffset = 0.0f;
+
   // D2D Resources
   ComPtr<ID2D1SolidColorBrush> m_brushBg;
   ComPtr<ID2D1SolidColorBrush> m_brushSelection;
@@ -214,6 +224,8 @@ private:
   bool m_restoreInfoPanel = false;
 
   void EnsureVisible(int index, const D2D1_SIZE_F &size, bool smooth = true);
+  bool GetGridScrollbarGeometry(D2D1_RECT_F &track,
+                                D2D1_RECT_F &thumb) const;
   __declspec(noinline) D2D1_RECT_F GetItemRect(int index, float winW) const;
   int HitTest(float x, float y);
 };
