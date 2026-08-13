@@ -3584,6 +3584,20 @@ HRESULT CImageLoader::LoadShellThumbnail(LPCWSTR filePath, int targetSize,
         &hBitmap);
   }
 
+  // AVIF screenshots rarely have embedded thumbnails. Let the Windows image
+  // codec generate one on the first visit so the result enters the persistent
+  // Shell cache; subsequent QuickView processes then load it in milliseconds.
+  if (FAILED(hr) || !hBitmap) {
+    const std::wstring_view extension = QuickView::ExtensionOf(filePath);
+    if (QuickView::ExtEqualsIgnoreCase(extension, L".avif") ||
+        QuickView::ExtEqualsIgnoreCase(extension, L".avifs")) {
+      hr = imageFactory->GetImage(
+          size,
+          static_cast<SIIGBF>(SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK),
+          &hBitmap);
+    }
+  }
+
   if (FAILED(hr) || !hBitmap)
     return E_FAIL;
 
@@ -11683,7 +11697,13 @@ HRESULT CImageLoader::LoadThumbAVIF_Proxy(const uint8_t *data, size_t size,
   // [v6.9.1] Maximize Tolerance
   decoder->ignoreXMP = AVIF_TRUE;
   decoder->ignoreExif = AVIF_TRUE; // We extract Exif via EasyExif later anyway
-  decoder->maxThreads = (std::max)(1u, std::thread::hardware_concurrency());
+  const unsigned hardwareThreads =
+      (std::max)(1u, std::thread::hardware_concurrency());
+  // The gallery runs multiple independent thumbnail decoders. Four threads
+  // per AVIF keeps all cores busy without 8 x 32-way oversubscription.
+  decoder->maxThreads =
+      targetSize > 0 ? (std::min)(4u, hardwareThreads)
+                     : (std::min)(8u, hardwareThreads);
   decoder->imageSizeLimit = 32768ULL * 32768ULL;
   decoder->imageDimensionLimit = 32768;
 

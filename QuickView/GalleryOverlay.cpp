@@ -106,6 +106,10 @@ void GalleryOverlay::Open(int currentIndex, GalleryMode targetMode) {
     m_mode = targetMode;
     m_targetProgress = 1.0f;
     m_targetGridProgress = (targetMode == GalleryMode::FullGrid) ? 1.0f : 0.0f;
+    // A direct FullGrid open has no filmstrip geometry to morph from. Start at
+    // final grid layout so virtualization and visible thumbnail work are exact
+    // on the first paint.
+    if (targetMode == GalleryMode::FullGrid) m_gridProgress = 1.0f;
     m_selectedIndex = currentIndex;
     
     // Save and hide Info Panel (Only for FullGrid, keep open for Filmstrip)
@@ -134,6 +138,8 @@ void GalleryOverlay::Open(int currentIndex, GalleryMode targetMode) {
     m_gridScrollbarHover = false;
     m_gridScrollbarDragging = false;
     m_gridScrollbarDragOffset = 0.0f;
+    m_thumbnailPrefetchStart = -1;
+    m_thumbnailPrefetchEnd = -1;
     
     RequestRepaint(QuickView::PaintLayer::Gallery);
 }
@@ -678,13 +684,25 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
     m_scrollTop = std::clamp(m_scrollTop, 0.0f, m_maxScroll);
     m_scrollLeft = std::clamp(m_scrollLeft, 0.0f, m_maxScrollLeft);
     
-    // Virtualization / visible range check (Frustum Culling)
+    // Virtualize the full grid by row. Besides avoiding 56k rectangle checks
+    // per paint, this gives the thumbnail scheduler the exact live viewport.
     int startIdx = 0;
-    int endIdx = (int)count - 1;
-    int centerIdx = (int)m_selectedIndex;
-    if (centerIdx < 0) centerIdx = 0;
-    
-    // Prioritize thumbnail loading around visible center index
+    int endIdx = static_cast<int>(count) - 1;
+    int centerIdx = (std::max)(0, m_selectedIndex);
+    if (m_mode == GalleryMode::FullGrid) {
+        const float rowStep = gridCellH + gridGap;
+        const int firstRow = (std::max)(
+            0, static_cast<int>(std::ceil(
+                   (m_scrollTop - currentPadding - gridCellH) / rowStep)));
+        const int lastRow = (std::min)(
+            gridRows - 1, static_cast<int>(std::floor(
+                              (m_scrollTop + galleryH - currentPadding) /
+                              rowStep)));
+        startIdx = (std::min)(endIdx, firstRow * gridCols);
+        endIdx = (std::min)(endIdx, (lastRow + 1) * gridCols - 1);
+        centerIdx = startIdx + (endIdx - startIdx) / 2;
+    }
+
     m_pThumbMgr->UpdateOptimizedPriority(startIdx, endIdx, centerIdx);
     
     // Clip drawing area to the visual panel area
@@ -743,11 +761,18 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
             m_brushSelection->SetOpacity(1.0f);
         }
         
-        // Draw thumbnail
-        ImageID imgId = m_pNav->GetImageID(i);
+        // Decode only to the physical size this cell needs. Keep displaying a
+        // smaller cached bitmap while a zoom-triggered upgrade is queued.
+        const int targetSize = static_cast<int>(std::ceil(
+            (std::max)(cw, ch) * 1.15f));
+        const ImageID imgId = m_pNav->GetImageID(i);
         const std::wstring& path = m_pNav->GetFile(i);
-        auto bmp = m_pThumbMgr->GetThumbnail(imgId, path.c_str(), pDC);
-        
+        bool needsRequest = false;
+        auto bmp = m_pThumbMgr->GetThumbnail(
+            imgId, path.c_str(), pDC, targetSize, &needsRequest);
+        if (needsRequest && !m_isZooming) {
+            m_pThumbMgr->QueueRequest(imgId, path.c_str(), i, targetSize);
+        }
         if (bmp) {
             // Use BitmapBrush to draw with elegant 6px rounded corners
             ComPtr<ID2D1BitmapBrush> bmpBrush;
@@ -785,11 +810,6 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
                 pDC->FillRoundedRectangle(D2D1::RoundedRect(cellRect, 6.0f * scale, 6.0f * scale), m_brushBg.Get());
             }
             
-            // Queue request only if NOT actively columns-zooming (performance LOD)
-            if (!m_isZooming) {
-                int prio = std::abs(i - centerIdx);
-                m_pThumbMgr->QueueRequest(imgId, path.c_str(), prio);
-            }
         }
         // [RAW+JPEG Pairing] "+CR3"-style badge: this item carries a hidden
         // RAW. Theme-independent dark chip so it reads on any photo content.
@@ -814,7 +834,7 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
     };
     
     // Phase 1: Draw all standard (non-selected, non-hovered) thumbnails first
-    for (int i = 0; i < (int)count; ++i) {
+    for (int i = startIdx; i <= endIdx; ++i) {
         if (i != m_selectedIndex && i != m_hoverIndex) {
             drawItem(i);
         }
@@ -828,6 +848,29 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
     // Phase 3: Draw the hovered (enlarged) item on TOP of everything to guarantee it overlaps adjacent items without cutoff
     if (m_hoverIndex >= 0 && m_hoverIndex < (int)count) {
         drawItem(m_hoverIndex);
+    }
+
+    // Once the visible jobs are queued, warm one adjacent viewport on both
+    // sides. Visible priorities always win; the persistent Shell cache makes
+    // ordinary follow-on scrolling and later launches effectively instant.
+    if (m_mode == GalleryMode::FullGrid) {
+        const int viewportSpan = endIdx - startIdx + 1;
+        const int prefetchStart = (std::max)(0, startIdx - viewportSpan);
+        const int prefetchEnd = (std::min)(
+            static_cast<int>(count) - 1, endIdx + viewportSpan);
+        if (prefetchStart != m_thumbnailPrefetchStart ||
+            prefetchEnd != m_thumbnailPrefetchEnd) {
+            m_thumbnailPrefetchStart = prefetchStart;
+            m_thumbnailPrefetchEnd = prefetchEnd;
+            const int prefetchSize = static_cast<int>(std::ceil(
+                gridCellW * 1.15f));
+            for (int i = prefetchStart; i <= prefetchEnd; ++i) {
+                if (i >= startIdx && i <= endIdx) continue;
+                m_pThumbMgr->QueueRequest(
+                    m_pNav->GetImageID(i), m_pNav->GetFile(i).c_str(), i,
+                    prefetchSize);
+            }
+        }
     }
     
     pDC->PopAxisAlignedClip(); // Pop thumbsClip

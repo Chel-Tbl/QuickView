@@ -38,7 +38,9 @@ public:
     // Returns the bitmap if ready (L2 Cache).
     // If not ready, queues a request and returns nullptr.
     // If L1 Cache hit (Raw Data), immediately creates Bitmap (L2) and returns it.
-    ComPtr<ID2D1Bitmap> GetThumbnail(size_t imageId, LPCWSTR filePath, ID2D1RenderTarget* pRT);
+    ComPtr<ID2D1Bitmap> GetThumbnail(size_t imageId, LPCWSTR filePath,
+                                    ID2D1RenderTarget* pRT, int targetSize,
+                                    bool* needsRequest = nullptr);
 
     // Call this when file list changes completely
     void ClearCache();
@@ -48,7 +50,7 @@ public:
     void UpdateOptimizedPriority(int startIdx, int endIdx, int priorityCenter);
 
     // Dynamic queue management
-    void QueueRequest(size_t imageId, LPCWSTR path, int priority);
+    void QueueRequest(size_t imageId, LPCWSTR path, int itemIndex, int targetSize);
     void ClearQueue();
 
 private:
@@ -90,10 +92,11 @@ private:
     struct Task {
         size_t imageId;
         std::wstring path;
-        int priorityDistance; // 0 = highest (center)
+        int itemIndex;
+        int priorityDistance; // 0 = highest (visible viewport center)
+        int targetSize;
         bool isFastLane;      // Tag to verify lane if needed
-        uint64_t generation;   // [Fix] Track when this task was created
-
+        uint64_t generation;  // Track when this task was created
         // [New] Archive-aware sorting
         bool isArchive = false;
         int archiveIndex = -1;
@@ -109,7 +112,7 @@ private:
         }
     };
 
-    std::thread m_workerThreadFast;
+    std::vector<std::thread> m_workerThreadsFast;
     std::thread m_workerThreadSlow;
     
     std::mutex m_queueMutex; // Protects BOTH queues and pending map
@@ -119,15 +122,20 @@ private:
     std::priority_queue<Task, std::vector<Task>, std::greater<Task>> m_fastQueue;
     std::priority_queue<Task, std::vector<Task>, std::greater<Task>> m_slowQueue;
     
-    std::unordered_map<size_t, bool> m_pendingTasks; 
+    std::unordered_map<size_t, uint64_t> m_pendingTasks;
     std::atomic<bool> m_running = false;
     std::atomic<uint64_t> m_currentGeneration{ 0 };
+    int m_priorityStart = -1;
+    int m_priorityEnd = -1;
+    int m_priorityCenter = -1;
 
     void WorkerLoopFast();
     void WorkerLoopSlow();
+    void FinishPendingTask(const Task& task);
     
     void EvictLRU();
     void AddToLRU(size_t imageId, size_t size);
+    void StoreDecodedThumbnail(size_t imageId, CImageLoader::ThumbData&& data);
     void TouchLRU(size_t imageId);
 
     const size_t MAX_CACHE_SIZE = 512 * 1024 * 1024; // [v6.0.6] Increased to 512MB for 4K/8K assets

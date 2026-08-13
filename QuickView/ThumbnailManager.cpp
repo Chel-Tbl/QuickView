@@ -15,7 +15,17 @@ void ThumbnailManager::Initialize(HWND hwnd, CImageLoader* pLoader) {
     m_hwnd = hwnd;
     m_pLoader = pLoader;
     m_running = true;
-    m_workerThreadFast = std::thread(&ThumbnailManager::WorkerLoopFast, this);
+
+    // AVIF thumbnails use four decoder threads each. Keep enough independent
+    // jobs in flight to fill a viewport without oversubscribing the machine.
+    const unsigned hardwareThreads =
+        (std::max)(1u, std::thread::hardware_concurrency());
+    const unsigned fastWorkerCount =
+        std::clamp(hardwareThreads / 4u, 1u, 8u);
+    m_workerThreadsFast.reserve(fastWorkerCount);
+    for (unsigned i = 0; i < fastWorkerCount; ++i) {
+        m_workerThreadsFast.emplace_back(&ThumbnailManager::WorkerLoopFast, this);
+    }
     m_workerThreadSlow = std::thread(&ThumbnailManager::WorkerLoopSlow, this);
 }
 
@@ -23,7 +33,10 @@ void ThumbnailManager::Shutdown() {
     m_running = false;
     m_cvFast.notify_all();
     m_cvSlow.notify_all();
-    if (m_workerThreadFast.joinable()) m_workerThreadFast.join();
+    for (auto& worker : m_workerThreadsFast) {
+        if (worker.joinable()) worker.join();
+    }
+    m_workerThreadsFast.clear();
     if (m_workerThreadSlow.joinable()) m_workerThreadSlow.join();
     ClearCache();
 }
@@ -42,60 +55,102 @@ void ThumbnailManager::ClearCache() {
     m_pendingTasks.clear();
     m_fastQueue = std::priority_queue<Task, std::vector<Task>, std::greater<Task>>();
     m_slowQueue = std::priority_queue<Task, std::vector<Task>, std::greater<Task>>();
-
-    m_slowQueue = std::priority_queue<Task, std::vector<Task>, std::greater<Task>>();
+    m_priorityStart = -1;
+    m_priorityEnd = -1;
+    m_priorityCenter = -1;
 }
 
-ComPtr<ID2D1Bitmap> ThumbnailManager::GetThumbnail(size_t imageId, LPCWSTR /*filePath*/, ID2D1RenderTarget* pRT) {
+ComPtr<ID2D1Bitmap> ThumbnailManager::GetThumbnail(
+    size_t imageId, LPCWSTR /*filePath*/, ID2D1RenderTarget* pRT,
+    int targetSize, bool* needsRequest) {
     std::lock_guard<std::mutex> lock(m_cacheMutex);
+    if (needsRequest) *needsRequest = false;
+    const int requestedSize = std::clamp(targetSize, 64, 300);
 
-    // 1. Check L2 Cache (GPU Bitmap)
     auto itL2 = m_l2Cache.find(imageId);
     if (itL2 != m_l2Cache.end()) {
         TouchLRU(imageId);
+        const D2D1_SIZE_F size = itL2->second->GetSize();
+        if (needsRequest) {
+            *needsRequest = (std::max)(size.width, size.height) + 0.5f <
+                            static_cast<float>(requestedSize);
+        }
         return itL2->second;
     }
 
-    // 2. Check L1 Cache (Raw Data) - Promote to L2
     auto itL1 = m_l1Cache.find(imageId);
     if (itL1 != m_l1Cache.end()) {
         TouchLRU(imageId);
         if (itL1->second.isFailed) return nullptr;
 
+        if (needsRequest) {
+            *needsRequest =
+                (std::max)(itL1->second.width, itL1->second.height) <
+                requestedSize;
+        }
+
         ComPtr<ID2D1Bitmap> bmp;
         if (pRT && !itL1->second.pixels.empty()) {
-            D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
-                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
-            );
-            D2D1_SIZE_U size = D2D1::SizeU(itL1->second.width, itL1->second.height);
-            HRESULT hr = pRT->CreateBitmap(size, itL1->second.pixels.data(), itL1->second.stride, &props, &bmp);
+            const D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
+                                  D2D1_ALPHA_MODE_PREMULTIPLIED));
+            const D2D1_SIZE_U size =
+                D2D1::SizeU(itL1->second.width, itL1->second.height);
+            const HRESULT hr =
+                pRT->CreateBitmap(size, itL1->second.pixels.data(),
+                                  itL1->second.stride, &props, &bmp);
             if (SUCCEEDED(hr)) {
                 m_l2Cache[imageId] = bmp;
             } else {
                 itL1->second.isFailed = true;
-                itL1->second.pixels.clear(); 
+                itL1->second.pixels.clear();
                 itL1->second.pixels.shrink_to_fit();
+                if (needsRequest) *needsRequest = false;
             }
         }
         return bmp;
     }
 
-    // 3. Not in Cache - Queue it (if not already)
-    // We don't queue here directly to avoid spamming lock.
-    // Usually Overlay calls UpdateOptimizedPriority to manage queue.
-    // But if we just need one specific file (e.g. current center), we could force queue it?
-    // Let's rely on UpdateOptimizedPriority for batch queuing.
-    // Return null for now.
+    if (needsRequest) *needsRequest = true;
     return nullptr;
 }
 
-void ThumbnailManager::UpdateOptimizedPriority(int startIdx, int endIdx, int priorityCenter) {
-    (void)startIdx;
-    (void)endIdx;
-    (void)priorityCenter;
-    // Queue requests are driven per-item by GalleryOverlay::Render.
-    // Clearing pending work here causes large images to be re-queued every frame
-    // while they are still decoding, which manifests as persistent flicker.
+void ThumbnailManager::UpdateOptimizedPriority(int startIdx, int endIdx,
+                                               int priorityCenter) {
+    std::lock_guard<std::mutex> lock(m_queueMutex);
+    if (startIdx == m_priorityStart && endIdx == m_priorityEnd &&
+        priorityCenter == m_priorityCenter) {
+        return;
+    }
+
+    m_priorityStart = startIdx;
+    m_priorityEnd = endIdx;
+    m_priorityCenter = priorityCenter;
+
+    auto reprioritize = [&](auto& queue) {
+        using Queue = std::decay_t<decltype(queue)>;
+        Queue updated;
+        while (!queue.empty()) {
+            Task task = queue.top();
+            queue.pop();
+            if (task.itemIndex < startIdx || task.itemIndex > endIdx) {
+                if (auto pending = m_pendingTasks.find(task.imageId);
+                    pending != m_pendingTasks.end() &&
+                    pending->second == task.generation) {
+                    m_pendingTasks.erase(pending);
+                }
+                continue;
+            }
+            task.priorityDistance = std::abs(task.itemIndex - priorityCenter);
+            updated.push(std::move(task));
+        }
+        queue = std::move(updated);
+    };
+
+    // A scrollbar jump must not wait behind thumbnails from the old viewport.
+    // In-flight work is allowed to finish and remains cached.
+    reprioritize(m_fastQueue);
+    reprioritize(m_slowQueue);
 }
 
 // Helper (Internal or Public?) - Let's make it Public for Overlay to use iteratively
@@ -146,6 +201,35 @@ void ThumbnailManager::TouchLRU(size_t imageId) {
         m_lruList.splice(m_lruList.begin(), m_lruList, it->second);
     }
 }
+void ThumbnailManager::StoreDecodedThumbnail(
+    size_t imageId, CImageLoader::ThumbData&& data) {
+    std::lock_guard<std::mutex> lock(m_cacheMutex);
+
+    if (auto existing = m_l1Cache.find(imageId);
+        existing != m_l1Cache.end()) {
+        const size_t oldSize = existing->second.pixels.size();
+        m_currentCacheSize =
+            oldSize <= m_currentCacheSize ? m_currentCacheSize - oldSize : 0;
+    }
+    m_l2Cache.erase(imageId);
+    if (auto lru = m_lruMap.find(imageId); lru != m_lruMap.end()) {
+        m_lruList.erase(lru->second);
+        m_lruMap.erase(lru);
+    }
+
+    const size_t size = data.pixels.size();
+    m_l1Cache[imageId] = std::move(data);
+    AddToLRU(imageId, size);
+}
+
+void ThumbnailManager::FinishPendingTask(const Task& task) {
+    std::lock_guard<std::mutex> lock(m_queueMutex);
+    if (auto pending = m_pendingTasks.find(task.imageId);
+        pending != m_pendingTasks.end() &&
+        pending->second == task.generation) {
+        m_pendingTasks.erase(pending);
+    }
+}
 
 void ThumbnailManager::WorkerLoopFast() {
     // Thumbnail extraction (especially via WIC/Shell) relies on COM components
@@ -169,12 +253,11 @@ void ThumbnailManager::WorkerLoopFast() {
         
         // [Fix] Check if task is still valid for current view state
         if (task.generation != m_currentGeneration) {
-            std::lock_guard<std::mutex> lock(m_queueMutex);
-            m_pendingTasks.erase(task.imageId);
+            FinishPendingTask(task);
             continue;
         }
 
-        int targetSize = 300; 
+        const int targetSize = task.targetSize;
         CImageLoader::ThumbData data;
         HRESULT hr = m_pLoader->LoadThumbnail(task.path.c_str(), targetSize, &data);
         if (FAILED(hr) || !data.isValid) {
@@ -187,19 +270,11 @@ void ThumbnailManager::WorkerLoopFast() {
         if (data.isValid) {
             // Re-check generation after potentially long extraction
             if (task.generation == m_currentGeneration) {
-                {
-                    std::lock_guard<std::mutex> lock(m_cacheMutex);
-                    size_t size = data.pixels.size();
-                    m_l1Cache[task.imageId] = std::move(data);
-                    AddToLRU(task.imageId, size);
-                }
+                StoreDecodedThumbnail(task.imageId, std::move(data));
                 PostMessage(m_hwnd, WM_THUMB_KEY_READY, (WPARAM)task.imageId, 0);
             }
         }
-        {
-            std::lock_guard<std::mutex> lock(m_queueMutex);
-            m_pendingTasks.erase(task.imageId);
-        }
+        FinishPendingTask(task);
     }
     
     if (SUCCEEDED(coInitHr)) {
@@ -226,14 +301,12 @@ void ThumbnailManager::WorkerLoopSlow() {
             
         }
         
-        // [Fix] Check if task is still valid for current view state
         if (task.generation != m_currentGeneration) {
-            std::lock_guard<std::mutex> lock(m_queueMutex);
-            m_pendingTasks.erase(task.imageId);
+            FinishPendingTask(task);
             continue;
         }
 
-        int targetSize = 300; 
+        const int targetSize = task.targetSize;
         CImageLoader::ThumbData data;
         HRESULT hr = m_pLoader->LoadThumbnail(task.path.c_str(), targetSize, &data, true);
         if (FAILED(hr) || !data.isValid) {
@@ -246,19 +319,11 @@ void ThumbnailManager::WorkerLoopSlow() {
         if (data.isValid) {
             // Re-check generation after potentially long extraction
             if (task.generation == m_currentGeneration) {
-                {
-                    std::lock_guard<std::mutex> lock(m_cacheMutex);
-                    size_t size = data.pixels.size();
-                    m_l1Cache[task.imageId] = std::move(data);
-                    AddToLRU(task.imageId, size);
-                }
+                StoreDecodedThumbnail(task.imageId, std::move(data));
                 PostMessage(m_hwnd, WM_THUMB_KEY_READY, (WPARAM)task.imageId, 0);
             }
         }
-        {
-            std::lock_guard<std::mutex> lock(m_queueMutex);
-            m_pendingTasks.erase(task.imageId);
-        }
+        FinishPendingTask(task);
     }
     
     if (SUCCEEDED(coInitHr)) {
@@ -269,11 +334,25 @@ void ThumbnailManager::WorkerLoopSlow() {
 // Added to match planned API changes
 #include "FileNavigator.h"
 
-void ThumbnailManager::QueueRequest(size_t imageId, LPCWSTR path, int priority) {
+void ThumbnailManager::QueueRequest(size_t imageId, LPCWSTR path, int itemIndex,
+                                    int targetSize) {
+    const int requestedSize = std::clamp(targetSize, 64, 300);
     {
         std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
-        if (m_l1Cache.count(imageId) || m_l2Cache.count(imageId)) {
-            return;
+        if (auto raw = m_l1Cache.find(imageId); raw != m_l1Cache.end()) {
+            if (raw->second.isFailed ||
+                (std::max)(raw->second.width, raw->second.height) >=
+                    requestedSize) {
+                return;
+            }
+        }
+        if (auto bitmap = m_l2Cache.find(imageId);
+            bitmap != m_l2Cache.end()) {
+            const D2D1_SIZE_F size = bitmap->second->GetSize();
+            if ((std::max)(size.width, size.height) + 0.5f >=
+                static_cast<float>(requestedSize)) {
+                return;
+            }
         }
     }
 
@@ -284,7 +363,10 @@ void ThumbnailManager::QueueRequest(size_t imageId, LPCWSTR path, int priority) 
     Task t;
     t.imageId = imageId;
     t.path = path;
-    t.priorityDistance = priority;
+    t.itemIndex = itemIndex;
+    t.priorityDistance =
+        m_priorityCenter >= 0 ? std::abs(itemIndex - m_priorityCenter) : 0;
+    t.targetSize = requestedSize;
     t.generation = m_currentGeneration;
 
     // Detect if this is a virtual archive path
@@ -316,18 +398,18 @@ void ThumbnailManager::QueueRequest(size_t imageId, LPCWSTR path, int priority) 
         m_cvSlow.notify_one();
     }
     
-    m_pendingTasks[imageId] = true;
+    m_pendingTasks[imageId] = t.generation;
 }
 
 void ThumbnailManager::ClearQueue() {
     std::lock_guard<std::mutex> lock(m_queueMutex);
-    m_currentGeneration++; // [Fix] Increment generation to invalidate pending background extractions
+    m_currentGeneration++; // Invalidate pending background extractions
     m_fastQueue = std::priority_queue<Task, std::vector<Task>, std::greater<Task>>();
     m_slowQueue = std::priority_queue<Task, std::vector<Task>, std::greater<Task>>();
     m_pendingTasks.clear();
-
-    m_slowQueue = std::priority_queue<Task, std::vector<Task>, std::greater<Task>>();
-    m_pendingTasks.clear();
+    m_priorityStart = -1;
+    m_priorityEnd = -1;
+    m_priorityCenter = -1;
 }
 
 

@@ -200,6 +200,8 @@ private:
   bool m_gridScrollbarHover = false;
   bool m_gridScrollbarDragging = false;
   float m_gridScrollbarDragOffset = 0.0f;
+  int m_thumbnailPrefetchStart = -1;
+  int m_thumbnailPrefetchEnd = -1;
 
   // D2D Resources
   ComPtr<ID2D1SolidColorBrush> m_brushBg;
