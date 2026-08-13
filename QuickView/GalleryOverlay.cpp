@@ -144,6 +144,7 @@ void GalleryOverlay::Open(int currentIndex, GalleryMode targetMode) {
     m_gridScrollbarHover = false;
     m_gridScrollbarDragging = false;
     m_gridScrollbarDragOffset = 0.0f;
+    m_resumePrefetchAfterGridTransition = false;
     
     RequestRepaint(QuickView::PaintLayer::Gallery);
 }
@@ -163,7 +164,14 @@ void GalleryOverlay::Close(bool keepSelection) {
         m_selectedIndex = -1;
     }
     if (m_pThumbMgr) m_pThumbMgr->ClearQueue();
-    if (g_pImageEngine) g_pImageEngine->SetGalleryPriorityMode(false);
+    if (g_pImageEngine) {
+        g_pImageEngine->SetGalleryPriorityMode(false);
+        if (!keepSelection && m_pNav && m_pNav->Index() >= 0) {
+            g_pImageEngine->UpdateView(
+                m_pNav->Index(), QuickView::BrowseDirection::IDLE);
+        }
+    }
+    m_resumePrefetchAfterGridTransition = false;
     
     // Restore Info Panel if it was hidden on Open
     if (m_restoreInfoPanel) {
@@ -180,10 +188,11 @@ void GalleryOverlay::SetMode(GalleryMode mode) {
     if (m_mode == mode) return;
     m_mode = mode;
     m_targetGridProgress = (mode == GalleryMode::FullGrid) ? 1.0f : 0.0f;
-    if (g_pImageEngine) {
-        g_pImageEngine->SetGalleryPriorityMode(
-            mode == GalleryMode::FullGrid);
+    if (mode == GalleryMode::FullGrid && g_pImageEngine) {
+        g_pImageEngine->SetGalleryPriorityMode(true);
     }
+    m_resumePrefetchAfterGridTransition =
+        mode != GalleryMode::FullGrid;
     if (mode == GalleryMode::FullGrid) {
         m_needsEnsureVisible = true;
     }
@@ -212,6 +221,16 @@ void GalleryOverlay::Update(float deltaTime, HWND hwnd) {
         if (m_gridProgress < 0.001f) m_gridProgress = 0.0f;
         if (m_gridProgress > 0.999f) m_gridProgress = 1.0f;
         repaintNeeded = true;
+    }
+    if (m_resumePrefetchAfterGridTransition &&
+        m_mode != GalleryMode::FullGrid &&
+        m_gridProgress <= 0.001f && g_pImageEngine) {
+        g_pImageEngine->SetGalleryPriorityMode(false);
+        if (m_pNav && m_pNav->Index() >= 0) {
+            g_pImageEngine->UpdateView(
+                m_pNav->Index(), QuickView::BrowseDirection::IDLE);
+        }
+        m_resumePrefetchAfterGridTransition = false;
     }
     
     // 3. Physical Inertia for Horizontal Scroll
@@ -709,7 +728,7 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
     int lastRow = gridRows - 1;
     int prefetchStart = startIdx;
     int prefetchEnd = endIdx;
-    if (m_mode == GalleryMode::FullGrid) {
+    if (m_gridProgress > 0.5f) {
         const float filmPadding = filmGap + 3.0f * scale;
         const float cellHeight =
             filmCellW + (gridCellH - filmCellW) * m_gridProgress;
@@ -750,6 +769,28 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
             prefetchStart = startIdx;
             prefetchEnd = endIdx;
         }
+    } else {
+        // During the filmstrip half of the morph, horizontal position is
+        // monotonic. Bound the possible blended grid contribution instead of
+        // walking and queuing the entire 56k-file folder.
+        const float blend = (std::max)(0.001f, 1.0f - m_gridProgress);
+        const float cellWidth =
+            filmCellW + (gridCellW - filmCellW) * m_gridProgress;
+        const float minFilmX =
+            (-cellWidth - m_gridProgress * size.width) / blend;
+        const float maxFilmX = size.width / blend;
+        const float filmStep = filmCellW + currentGap;
+        startIdx = std::clamp(
+            static_cast<int>(std::floor(
+                (minFilmX + m_scrollLeft - filmLeftMargin) / filmStep)),
+            0, endIdx);
+        endIdx = std::clamp(
+            static_cast<int>(std::ceil(
+                (maxFilmX + m_scrollLeft - filmLeftMargin) / filmStep)),
+            startIdx, static_cast<int>(count) - 1);
+        centerIdx = startIdx + (endIdx - startIdx) / 2;
+        prefetchStart = startIdx;
+        prefetchEnd = endIdx;
     }
 
     m_pThumbMgr->UpdateOptimizedPriority(

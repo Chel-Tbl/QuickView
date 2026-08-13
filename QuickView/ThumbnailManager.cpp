@@ -244,7 +244,7 @@ void ThumbnailManager::UpdateOptimizedPriority(
                 task.itemIndex > retainEnd) {
                 if (auto pending = m_pendingTasks.find(task.imageId);
                     pending != m_pendingTasks.end() &&
-                    pending->second == task.generation) {
+                    pending->second.generation == task.generation) {
                     m_pendingTasks.erase(pending);
                 }
                 continue;
@@ -253,7 +253,7 @@ void ThumbnailManager::UpdateOptimizedPriority(
             const bool visible =
                 task.itemIndex >= visibleStart &&
                 task.itemIndex <= visibleEnd;
-            if (visible) task.speculative = false;
+            task.speculative = !visible;
             task.priorityDistance =
                 std::abs(task.itemIndex - priorityCenter);
             if (task.isFastLane && !task.speculative) {
@@ -264,8 +264,6 @@ void ThumbnailManager::UpdateOptimizedPriority(
         }
     };
 
-    // Promote newly visible AVIF tasks from the speculative lane while
-    // discarding queued work from the old viewport.
     drain(m_fastQueue);
     drain(m_slowQueue);
     m_fastQueue = std::move(updatedFast);
@@ -322,9 +320,13 @@ void ThumbnailManager::TouchLRU(size_t imageId) {
         m_lruList.splice(m_lruList.begin(), m_lruList, it->second);
     }
 }
+
 bool ThumbnailManager::StoreDecodedThumbnail(
-    size_t imageId, CImageLoader::ThumbData&& data) {
+    size_t imageId, CImageLoader::ThumbData&& data, uint64_t generation) {
     std::lock_guard<std::mutex> lock(m_cacheMutex);
+    if (generation != m_currentGeneration.load(std::memory_order_acquire)) {
+        return false;
+    }
 
     if (auto existing = m_l1Cache.find(imageId);
         existing != m_l1Cache.end() && !existing->second.isFailed &&
@@ -352,11 +354,27 @@ bool ThumbnailManager::StoreDecodedThumbnail(
 
 void ThumbnailManager::FinishPendingTask(const Task& task) {
     std::lock_guard<std::mutex> lock(m_queueMutex);
-    if (auto pending = m_pendingTasks.find(task.imageId);
-        pending != m_pendingTasks.end() &&
-        pending->second == task.generation) {
-        m_pendingTasks.erase(pending);
+    auto pending = m_pendingTasks.find(task.imageId);
+    if (pending == m_pendingTasks.end() ||
+        pending->second.generation != task.generation) {
+        return;
     }
+    if (pending->second.targetSize > task.targetSize) {
+        Task upgrade = task;
+        upgrade.targetSize = pending->second.targetSize;
+        upgrade.speculative =
+            upgrade.itemIndex < m_priorityVisibleStart ||
+            upgrade.itemIndex > m_priorityVisibleEnd;
+        if (upgrade.isFastLane && !upgrade.speculative) {
+            m_fastQueue.push(std::move(upgrade));
+            m_cvFast.notify_one();
+        } else {
+            m_slowQueue.push(std::move(upgrade));
+            m_cvSlow.notify_one();
+        }
+        return;
+    }
+    m_pendingTasks.erase(pending);
 }
 
 
@@ -412,12 +430,8 @@ void ThumbnailManager::WorkerLoopFast() {
             data.pixels = {0x80, 0x80, 0x80, 0xFF};
             data.loaderName = L"Failure Placeholder";
         }
-        bool stored = false;
-        if (data.isValid && task.generation == m_currentGeneration) {
-            stored = StoreDecodedThumbnail(task.imageId, std::move(data));
-        }
-        // Clear pending before waking the UI. A higher-size request made by
-        // that paint must be admitted rather than lost behind this task.
+        const bool stored = StoreDecodedThumbnail(
+            task.imageId, std::move(data), task.generation);
         const bool shouldNotify = IsTaskVisible(task);
         FinishPendingTask(task);
         if (stored && shouldNotify) {
@@ -442,7 +456,6 @@ void ThumbnailManager::WorkerLoopSlow() {
             m_slowQueue.pop();
         }
 
-
         if (task.generation != m_currentGeneration) {
             FinishPendingTask(task);
             continue;
@@ -455,7 +468,8 @@ void ThumbnailManager::WorkerLoopSlow() {
         const HRESULT hr = servedFromImageCache
                                ? S_OK
                                : m_pLoader->LoadThumbnail(
-                                     task.path.c_str(), targetSize, &data, true);
+                                     task.path.c_str(), targetSize, &data,
+                                     true);
         if (FAILED(hr) || !data.isValid) {
             data.isValid = true;
             data.isFailed = true;
@@ -465,10 +479,8 @@ void ThumbnailManager::WorkerLoopSlow() {
             data.pixels = {0x80, 0x80, 0x80, 0xFF};
             data.loaderName = L"Failure Placeholder (Archive)";
         }
-        bool stored = false;
-        if (data.isValid && task.generation == m_currentGeneration) {
-            stored = StoreDecodedThumbnail(task.imageId, std::move(data));
-        }
+        const bool stored = StoreDecodedThumbnail(
+            task.imageId, std::move(data), task.generation);
         const bool shouldNotify = IsTaskVisible(task);
         FinishPendingTask(task);
         if (stored && shouldNotify) {
@@ -508,9 +520,13 @@ void ThumbnailManager::QueueRequest(size_t imageId, LPCWSTR path,
     }
 
     std::lock_guard<std::mutex> lock(m_queueMutex);
-    
-    if (m_pendingTasks.count(imageId)) return; // Already queued
-    
+    if (auto pending = m_pendingTasks.find(imageId);
+        pending != m_pendingTasks.end()) {
+        pending->second.targetSize =
+            (std::max)(pending->second.targetSize, requestedSize);
+        return;
+    }
+
     Task t;
     t.imageId = imageId;
     t.path = path;
@@ -521,24 +537,24 @@ void ThumbnailManager::QueueRequest(size_t imageId, LPCWSTR path,
     t.generation = m_currentGeneration;
     t.speculative = speculative;
 
-    // Detect if this is a virtual archive path
     std::wstring archivePath;
     size_t archiveIndex = 0;
     if (FileNavigator::ParseVirtualPath(path, archivePath, archiveIndex)) {
         t.isArchive = true;
-        t.archiveIndex = (int)archiveIndex;
+        t.archiveIndex = static_cast<int>(archiveIndex);
         t.archivePathHash = ComputePathHash(archivePath);
     }
 
-    // Detect format for Lane Selection
-    // Fast Lane: JPEG (Optimized) + RAW/HEIC/PSD (Embedded Preview) + WebP (Scaled)
     const std::wstring_view e = QuickView::ExtensionOf(path);
     const bool isFast =
-        QuickView::ExtEqualsIgnoreCase(e, L".jpg") || QuickView::ExtEqualsIgnoreCase(e, L".jpeg") ||
-        QuickView::ExtEqualsIgnoreCase(e, L".jpe") || QuickView::ExtEqualsIgnoreCase(e, L".jfif") ||
+        QuickView::ExtEqualsIgnoreCase(e, L".jpg") ||
+        QuickView::ExtEqualsIgnoreCase(e, L".jpeg") ||
+        QuickView::ExtEqualsIgnoreCase(e, L".jpe") ||
+        QuickView::ExtEqualsIgnoreCase(e, L".jfif") ||
         QuickView::IsRawExtension(e) || QuickView::IsHeifExtension(e) ||
         QuickView::ExtEqualsIgnoreCase(e, L".avif") ||
-        QuickView::ExtEqualsIgnoreCase(e, L".psd") || QuickView::ExtEqualsIgnoreCase(e, L".psb") ||
+        QuickView::ExtEqualsIgnoreCase(e, L".psd") ||
+        QuickView::ExtEqualsIgnoreCase(e, L".psb") ||
         QuickView::ExtEqualsIgnoreCase(e, L".webp");
     t.isFastLane = isFast;
 
@@ -549,8 +565,7 @@ void ThumbnailManager::QueueRequest(size_t imageId, LPCWSTR path,
         m_slowQueue.push(t);
         m_cvSlow.notify_one();
     }
-    
-    m_pendingTasks[imageId] = t.generation;
+    m_pendingTasks[imageId] = {t.generation, t.targetSize};
 }
 
 void ThumbnailManager::ClearQueue() {

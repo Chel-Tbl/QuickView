@@ -1373,20 +1373,10 @@ void ImageEngine::SetGalleryPriorityMode(bool active) {
         return;
     }
 
-    // This queue is owned by the UI thread. Let already-running normal-viewer
-    // jobs finish so their decoded frames remain reusable by the gallery.
+    // This queue is owned by the UI thread. Existing normal-viewer jobs finish
+    // and remain reusable. On exit, the next real navigation UpdateView call
+    // resumes lookahead with the final selected index and direction.
     m_prefetchQueue.clear();
-    if (!active && m_navigator) {
-        const int currentIndex = m_currentViewIndex.load();
-        if (currentIndex >= 0) {
-            const int direction = m_lastDirectionInt.load();
-            const QuickView::BrowseDirection browseDirection =
-                direction < 0 ? QuickView::BrowseDirection::BACKWARD
-                : direction > 0 ? QuickView::BrowseDirection::FORWARD
-                                : QuickView::BrowseDirection::IDLE;
-            UpdateView(currentIndex, browseDirection);
-        }
-    }
 }
 
 void ImageEngine::TriggerPendingJxlHeavy() {

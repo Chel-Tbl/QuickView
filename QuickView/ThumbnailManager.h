@@ -130,7 +130,11 @@ private:
     std::priority_queue<Task, std::vector<Task>, std::greater<Task>> m_fastQueue;
     std::priority_queue<Task, std::vector<Task>, std::greater<Task>> m_slowQueue;
     
-    std::unordered_map<size_t, uint64_t> m_pendingTasks;
+    struct PendingTask {
+        uint64_t generation = 0;
+        int targetSize = 0;
+    };
+    std::unordered_map<size_t, PendingTask> m_pendingTasks;
     std::atomic<bool> m_running = false;
     std::atomic<uint64_t> m_currentGeneration{ 0 };
     std::atomic<bool> m_readyNotificationPending{ false };
@@ -148,7 +152,9 @@ private:
     
     void EvictLRU();
     void AddToLRU(size_t imageId, size_t size);
-    bool StoreDecodedThumbnail(size_t imageId, CImageLoader::ThumbData&& data);
+    bool StoreDecodedThumbnail(size_t imageId,
+                               CImageLoader::ThumbData&& data,
+                               uint64_t generation);
     void TouchLRU(size_t imageId);
 
     const size_t MAX_CACHE_SIZE = 1024ULL * 1024 * 1024;
