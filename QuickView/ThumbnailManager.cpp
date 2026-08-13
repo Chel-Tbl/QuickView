@@ -5,6 +5,37 @@
 #include "FileNavigator.h"
 extern FileNavigator& g_navigator;
 
+namespace {
+unsigned GetPhysicalProcessorCount() {
+    DWORD byteCount = 0;
+    if (GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr,
+                                         &byteCount) ||
+        GetLastError() != ERROR_INSUFFICIENT_BUFFER || byteCount == 0) {
+        return (std::max)(1u, std::thread::hardware_concurrency() / 2u);
+    }
+
+    std::vector<unsigned char> buffer(byteCount);
+    auto* info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(
+        buffer.data());
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, info,
+                                          &byteCount)) {
+        return (std::max)(1u, std::thread::hardware_concurrency() / 2u);
+    }
+
+    unsigned coreCount = 0;
+    const auto* end = buffer.data() + byteCount;
+    auto* cursor = buffer.data();
+    while (cursor < end) {
+        const auto* entry = reinterpret_cast<
+            const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(cursor);
+        if (entry->Relationship == RelationProcessorCore) ++coreCount;
+        if (entry->Size == 0) break;
+        cursor += entry->Size;
+    }
+    return (std::max)(1u, coreCount);
+}
+} // namespace
+
 ThumbnailManager::ThumbnailManager() {}
 
 ThumbnailManager::~ThumbnailManager() {
@@ -16,17 +47,14 @@ void ThumbnailManager::Initialize(HWND hwnd, CImageLoader* pLoader) {
     m_pLoader = pLoader;
     m_running = true;
 
-    // AVIF thumbnails use four decoder threads each. Keep enough independent
-    // jobs in flight to fill a viewport without oversubscribing the machine.
-    const unsigned hardwareThreads =
-        (std::max)(1u, std::thread::hardware_concurrency());
+    // One independent thumbnail job per physical core. AVIF target previews
+    // are single-threaded, so this is a hard 16-core decode budget.
     const unsigned fastWorkerCount =
-        std::clamp(hardwareThreads / 4u, 1u, 8u);
+        (std::min)(16u, GetPhysicalProcessorCount());
     m_workerThreadsFast.reserve(fastWorkerCount);
     for (unsigned i = 0; i < fastWorkerCount; ++i) {
         m_workerThreadsFast.emplace_back(&ThumbnailManager::WorkerLoopFast, this);
     }
-    m_workerThreadSlow = std::thread(&ThumbnailManager::WorkerLoopSlow, this);
 }
 
 void ThumbnailManager::Shutdown() {
@@ -65,15 +93,16 @@ ComPtr<ID2D1Bitmap> ThumbnailManager::GetThumbnail(
     int targetSize, bool* needsRequest) {
     std::lock_guard<std::mutex> lock(m_cacheMutex);
     if (needsRequest) *needsRequest = false;
-    const int requestedSize = std::clamp(targetSize, 64, 300);
+    const int requestedSize = std::clamp(targetSize, 64, 1024);
 
     auto itL2 = m_l2Cache.find(imageId);
     if (itL2 != m_l2Cache.end()) {
         TouchLRU(imageId);
         const D2D1_SIZE_F size = itL2->second->GetSize();
         if (needsRequest) {
-            *needsRequest = (std::max)(size.width, size.height) + 0.5f <
-                            static_cast<float>(requestedSize);
+            *needsRequest =
+                (std::min)(size.width, size.height) + 0.5f <
+                static_cast<float>(requestedSize);
         }
         return itL2->second;
     }
@@ -85,7 +114,7 @@ ComPtr<ID2D1Bitmap> ThumbnailManager::GetThumbnail(
 
         if (needsRequest) {
             *needsRequest =
-                (std::max)(itL1->second.width, itL1->second.height) <
+                (std::min)(itL1->second.width, itL1->second.height) <
                 requestedSize;
         }
 
@@ -205,6 +234,12 @@ void ThumbnailManager::StoreDecodedThumbnail(
     size_t imageId, CImageLoader::ThumbData&& data) {
     std::lock_guard<std::mutex> lock(m_cacheMutex);
 
+    if (auto existing = m_l1Cache.find(imageId);
+        existing != m_l1Cache.end() && !existing->second.isFailed &&
+        (std::min)(existing->second.width, existing->second.height) >
+            (std::min)(data.width, data.height)) {
+        return;
+    }
     if (auto existing = m_l1Cache.find(imageId);
         existing != m_l1Cache.end()) {
         const size_t oldSize = existing->second.pixels.size();
@@ -331,17 +366,14 @@ void ThumbnailManager::WorkerLoopSlow() {
     }
 }
 
-// Added to match planned API changes
-#include "FileNavigator.h"
-
-void ThumbnailManager::QueueRequest(size_t imageId, LPCWSTR path, int itemIndex,
-                                    int targetSize) {
-    const int requestedSize = std::clamp(targetSize, 64, 300);
+void ThumbnailManager::QueueRequest(size_t imageId, LPCWSTR path,
+                                    int itemIndex, int targetSize) {
+    const int requestedSize = std::clamp(targetSize, 64, 1024);
     {
         std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
         if (auto raw = m_l1Cache.find(imageId); raw != m_l1Cache.end()) {
             if (raw->second.isFailed ||
-                (std::max)(raw->second.width, raw->second.height) >=
+                (std::min)(raw->second.width, raw->second.height) >=
                     requestedSize) {
                 return;
             }
@@ -349,7 +381,7 @@ void ThumbnailManager::QueueRequest(size_t imageId, LPCWSTR path, int itemIndex,
         if (auto bitmap = m_l2Cache.find(imageId);
             bitmap != m_l2Cache.end()) {
             const D2D1_SIZE_F size = bitmap->second->GetSize();
-            if ((std::max)(size.width, size.height) + 0.5f >=
+            if ((std::min)(size.width, size.height) + 0.5f >=
                 static_cast<float>(requestedSize)) {
                 return;
             }

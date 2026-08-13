@@ -3568,33 +3568,46 @@ HRESULT CImageLoader::LoadShellThumbnail(LPCWSTR filePath, int targetSize,
   SIZE size = {targetSize, targetSize};
   HBITMAP hBitmap = nullptr;
 
-  // Step 1: Request from shell cache (exactly target size) and strictly NO Icon
-  // fallback (SIIGBF_THUMBNAILONLY)
+  auto discardUndersized = [&](HBITMAP& bitmap) {
+    if (!bitmap) return;
+    BITMAP dimensions = {};
+    if (!GetObject(bitmap, sizeof(dimensions), &dimensions) ||
+        (std::min)(dimensions.bmWidth, dimensions.bmHeight) < targetSize) {
+      DeleteObject(bitmap);
+      bitmap = nullptr;
+    }
+  };
+
+  // Accept only cache entries large enough for the rendered cell. Windows may
+  // otherwise return an old 96px bitmap for a 256px request.
   hr = imageFactory->GetImage(
       size, static_cast<SIIGBF>(SIIGBF_THUMBNAILONLY | SIIGBF_INCACHEONLY),
       &hBitmap);
+  discardUndersized(hBitmap);
 
-  // Step 2: Fallback to System Large Icon Cache size (256) if the requested
-  // size failed
-  if (FAILED(hr) || !hBitmap) {
-    SIZE fallbackSize = {256, 256};
+  if (!hBitmap && targetSize <= 256) {
+    const SIZE fallbackSize = {256, 256};
     hr = imageFactory->GetImage(
         fallbackSize,
         static_cast<SIIGBF>(SIIGBF_THUMBNAILONLY | SIIGBF_INCACHEONLY),
         &hBitmap);
+    discardUndersized(hBitmap);
   }
 
-  // AVIF screenshots rarely have embedded thumbnails. Let the Windows image
-  // codec generate one on the first visit so the result enters the persistent
-  // Shell cache; subsequent QuickView processes then load it in milliseconds.
-  if (FAILED(hr) || !hBitmap) {
+  // On a cache miss, ask the Windows provider for a 2x crop-axis thumbnail.
+  // This populates the persistent cache while preserving enough pixels for
+  // square center-crops; direct libavif remains the fallback.
+  if (!hBitmap) {
     const std::wstring_view extension = QuickView::ExtensionOf(filePath);
     if (QuickView::ExtEqualsIgnoreCase(extension, L".avif") ||
         QuickView::ExtEqualsIgnoreCase(extension, L".avifs")) {
+      const int generatedEdge = (std::min)(targetSize * 2, 2048);
+      const SIZE generatedSize = {generatedEdge, generatedEdge};
       hr = imageFactory->GetImage(
-          size,
+          generatedSize,
           static_cast<SIIGBF>(SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK),
           &hBitmap);
+      discardUndersized(hBitmap);
     }
   }
 
@@ -3754,16 +3767,14 @@ static HRESULT DownscaleThumbDataIfNeeded(CImageLoader::ThumbData *pData,
                                           int targetSize) {
   if (!pData || !pData->isValid || targetSize <= 0)
     return S_OK;
-  if (pData->width <= targetSize && pData->height <= targetSize)
+  // targetSize is the minimum crop-axis edge, not the longest edge.
+  const int cropAxis =
+      (std::min)(pData->width, pData->height);
+  if (cropAxis <= targetSize)
     return S_OK;
 
-  float scaleW =
-      static_cast<float>(targetSize) / static_cast<float>(pData->width);
-  float scaleH =
-      static_cast<float>(targetSize) / static_cast<float>(pData->height);
-  float scale = (std::min)(scaleW, scaleH);
-  if (scale >= 1.0f)
-    return S_OK;
+  const float scale =
+      static_cast<float>(targetSize) / static_cast<float>(cropAxis);
 
   int finalW = (std::max)(1, static_cast<int>(pData->width * scale + 0.5f));
   int finalH = (std::max)(1, static_cast<int>(pData->height * scale + 0.5f));
@@ -7486,12 +7497,10 @@ static HRESULT Load(const uint8_t *data, size_t size, const DecodeContext &ctx,
   }
 
   decoder->strictFlags = AVIF_STRICT_DISABLED;
-  // HeavyLane supplies up to eight independent AVIF jobs. Bound nested codec
-  // parallelism so one lookahead window cannot request 8 × all logical CPUs.
   const unsigned int hardwareThreads =
       (std::max)(1u, std::thread::hardware_concurrency());
-  decoder->maxThreads = (std::min)(8u, hardwareThreads);
-
+  decoder->maxThreads =
+      ctx.forcePreview ? 1u : (std::min)(8u, hardwareThreads);
   avifResult avifHr = avifDecoderSetIOMemory(decoder, data, size);
   if (avifHr != AVIF_RESULT_OK) {
     avifDecoderDestroy(decoder);
@@ -11699,11 +11708,8 @@ HRESULT CImageLoader::LoadThumbAVIF_Proxy(const uint8_t *data, size_t size,
   decoder->ignoreExif = AVIF_TRUE; // We extract Exif via EasyExif later anyway
   const unsigned hardwareThreads =
       (std::max)(1u, std::thread::hardware_concurrency());
-  // The gallery runs multiple independent thumbnail decoders. Four threads
-  // per AVIF keeps all cores busy without 8 x 32-way oversubscription.
-  decoder->maxThreads =
-      targetSize > 0 ? (std::min)(4u, hardwareThreads)
-                     : (std::min)(8u, hardwareThreads);
+  // One AVIF worker per physical core; no nested decoder oversubscription.
+  decoder->maxThreads = targetSize > 0 ? 1u : (std::min)(8u, hardwareThreads);
   decoder->imageSizeLimit = 32768ULL * 32768ULL;
   decoder->imageDimensionLimit = 32768;
 
@@ -11876,13 +11882,11 @@ HRESULT CImageLoader::LoadThumbAVIF_Proxy(const uint8_t *data, size_t size,
   int origW = decoder->image->width;
   int origH = decoder->image->height;
 
-  if (targetSize > 0 && (origW > targetSize || origH > targetSize)) {
-    float ratio = 1.0f;
-    if (origW > origH) {
-      ratio = (float)targetSize / origW;
-    } else {
-      ratio = (float)targetSize / origH;
-    }
+  if (targetSize > 0 &&
+      (std::min)(origW, origH) > targetSize) {
+    const float ratio =
+        static_cast<float>(targetSize) /
+        static_cast<float>((std::min)(origW, origH));
 
     uint32_t newW = (uint32_t)(origW * ratio);
     uint32_t newH = (uint32_t)(origH * ratio);

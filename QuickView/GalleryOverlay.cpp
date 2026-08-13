@@ -257,7 +257,8 @@ void GalleryOverlay::Update(float deltaTime, HWND hwnd) {
         m_zoomDebounceTimer -= deltaTime;
         if (m_zoomDebounceTimer <= 0.0f) {
             m_isZooming = false;
-            SaveConfig(); // Persist changes once the user stops zooming
+            SaveConfig();
+            repaintNeeded = true;
         }
         if (m_cols != m_targetCols) {
             m_cols = m_targetCols;
@@ -761,10 +762,11 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
             m_brushSelection->SetOpacity(1.0f);
         }
         
-        // Decode only to the physical size this cell needs. Keep displaying a
-        // smaller cached bitmap while a zoom-triggered upgrade is queued.
-        const int targetSize = static_cast<int>(std::ceil(
-            (std::max)(cw, ch) * 1.15f));
+        // Decode at least twice the rendered cell edge. For a 16:9 source this
+        // leaves 1.125 source pixels per output pixel after square center-crop.
+        const int targetSize = (std::max)(
+            256, static_cast<int>(std::ceil(
+                     (std::max)(cw, ch) * 2.0f)));
         const ImageID imgId = m_pNav->GetImageID(i);
         const std::wstring& path = m_pNav->GetFile(i);
         bool needsRequest = false;
@@ -861,9 +863,8 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
         if (prefetchStart != m_thumbnailPrefetchStart ||
             prefetchEnd != m_thumbnailPrefetchEnd) {
             m_thumbnailPrefetchStart = prefetchStart;
-            m_thumbnailPrefetchEnd = prefetchEnd;
-            const int prefetchSize = static_cast<int>(std::ceil(
-                gridCellW * 1.15f));
+            const int prefetchSize = (std::max)(
+                256, static_cast<int>(std::ceil(gridCellW * 2.0f)));
             for (int i = prefetchStart; i <= prefetchEnd; ++i) {
                 if (i >= startIdx && i <= endIdx) continue;
                 m_pThumbMgr->QueueRequest(
