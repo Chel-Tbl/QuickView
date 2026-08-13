@@ -90,6 +90,7 @@ public:
     
     // === Cancellation ===
     void CancelOthers(ImageID currentId, PaneSlot targetSlot = PaneSlot::Primary, const std::vector<ImageID>& protectedIds = {});
+    void CancelImage(ImageID imageId, PaneSlot targetSlot);
     void CancelAll();
     
     // === Result Retrieval ===
@@ -109,6 +110,8 @@ public:
         bool masterWarmupActive; // [Titan] True if background MMF filling is currently running
     };
     PoolStats GetStats() const;
+    int GetStandardWorkCount() const;
+    bool HasStandardWork(ImageID imageId, PaneSlot targetSlot) const;
     
     struct WorkerSnapshot {
         bool alive;
@@ -136,6 +139,7 @@ private:
         WorkerState state = WorkerState::SLEEPING;  // Protected by m_poolMutex
         std::wstring currentPath;
         ImageID currentId = 0;  // [ImageID] Path hash of current task
+        PaneSlot currentSlot = PaneSlot::Primary;
         std::stop_source stopSource; // Job cancellation
         std::stop_source threadStopSource; // [Fast Exit] Thread lifecycle control
         std::chrono::steady_clock::time_point lastActiveTime;

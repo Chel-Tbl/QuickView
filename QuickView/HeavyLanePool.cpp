@@ -563,14 +563,23 @@ void HeavyLanePool::Submit(const std::wstring& path, ImageID imageId, std::share
     // Non-Titan: full decode only (JPEG upgrade path removed). Titan: scaled base layer.
     bool isFull = !m_isTitanMode;
 
-    // [Dedup] Prevent redundant decoding jobs in the pending queue
+    // Deduplicate queued standard decodes. A visible request may arrive while
+    // its lookahead decode is still queued; promote that existing job instead
+    // of leaving the current frame behind speculative work.
     if (!m_isTitanMode) {
-        for (const auto& existing : m_pendingJobs) {
-        if (existing.type == JobType::Standard && existing.imageId == imageId && existing.targetSlot == targetSlot) {
-                // If the generation is old, we could update it. But simple dedup is fine.
-                // Just return if we already have it pending.
-                return;
+        for (auto& existing : m_pendingJobs) {
+            if (existing.type != JobType::Standard ||
+                existing.imageId != imageId ||
+                existing.targetSlot != targetSlot) {
+                continue;
             }
+            if (priority > existing.priority) {
+                existing.priority = priority;
+                existing.generationId = generationId;
+                if (mmf) existing.mmf = std::move(mmf);
+                std::make_heap(m_pendingJobs.begin(), m_pendingJobs.end());
+            }
+            return;
         }
     }
 
@@ -596,6 +605,21 @@ void HeavyLanePool::Submit(const std::wstring& path, ImageID imageId, std::share
 
 void HeavyLanePool::SubmitFullDecode(const std::wstring& path, ImageID imageId, std::shared_ptr<QuickView::MappedFile> mmf, PaneSlot targetSlot, uint64_t generationId, int priority) {
     std::lock_guard lock(m_poolMutex);
+    for (auto& existing : m_pendingJobs) {
+        if (existing.type != JobType::Standard ||
+            existing.imageId != imageId ||
+            existing.targetSlot != targetSlot) {
+            continue;
+        }
+        if (priority > existing.priority) {
+            existing.priority = priority;
+            existing.generationId = generationId;
+            if (mmf) existing.mmf = std::move(mmf);
+            existing.isFullDecode = true;
+            std::make_heap(m_pendingJobs.begin(), m_pendingJobs.end());
+        }
+        return;
+    }
     
     JobInfo job;
     job.type = JobType::Standard;
@@ -740,6 +764,7 @@ void HeavyLanePool::SubmitTileBatch(const std::wstring& path, ImageID imageId, s
 // ============================================================================
 
 void HeavyLanePool::CancelOthers(ImageID currentId, PaneSlot targetSlot, const std::vector<ImageID>& protectedIds) {
+    bool removedJobs = false;
     std::lock_guard lock(m_poolMutex);
     
 // 1. Clear Job Queue of non-matching IDs
@@ -756,9 +781,13 @@ void HeavyLanePool::CancelOthers(ImageID currentId, PaneSlot targetSlot, const s
             }
             it = m_pendingJobs.erase(it);
             m_cancelCount++;
+            removedJobs = true;
         } else {
             ++it;
         }
+    }
+    if (removedJobs) {
+        std::make_heap(m_pendingJobs.begin(), m_pendingJobs.end());
     }
     if (removedTiles > 0) m_activeTileJobs.fetch_sub(removedTiles);
     
@@ -773,6 +802,41 @@ void HeavyLanePool::CancelOthers(ImageID currentId, PaneSlot targetSlot, const s
                 TerminateProcess(w.activeWorkerProcess, static_cast<UINT>(E_ABORT));
                 // Do not close handle here, the thread's wait loop will close it or we close it on reuse
             }
+        }
+    }
+}
+
+void HeavyLanePool::CancelImage(ImageID imageId, PaneSlot targetSlot) {
+    std::lock_guard lock(m_poolMutex);
+
+    bool removedJobs = false;
+    auto it = m_pendingJobs.begin();
+    while (it != m_pendingJobs.end()) {
+        if (it->type == JobType::Standard &&
+            it->imageId == imageId &&
+            it->targetSlot == targetSlot) {
+            it = m_pendingJobs.erase(it);
+            removedJobs = true;
+            m_cancelCount++;
+        } else {
+            ++it;
+        }
+    }
+    if (removedJobs) {
+        std::make_heap(m_pendingJobs.begin(), m_pendingJobs.end());
+    }
+
+    for (auto& worker : m_workers) {
+        if (worker.state != WorkerState::BUSY ||
+            worker.currentId != imageId ||
+            worker.currentSlot != targetSlot) {
+            continue;
+        }
+        worker.stopSource.request_stop();
+        if (worker.activeWorkerProcess) {
+            TerminateProcess(
+                worker.activeWorkerProcess,
+                static_cast<UINT>(E_ABORT));
         }
     }
 }
@@ -878,6 +942,7 @@ void HeavyLanePool::WorkerLoop(int workerId, std::stop_token st) {
 
             self.currentPath = job.path;
             self.currentId = job.imageId;  // [ImageID]
+            self.currentSlot = job.targetSlot;
             self.stopSource = std::stop_source();  // Fresh stop source for this job
             self.state = WorkerState::BUSY;
             m_busyCount.fetch_add(1);
@@ -1967,6 +2032,62 @@ std::optional<EngineEvent> HeavyLanePool::TryPopResult() {
 // ============================================================================
 // Stats for Debug HUD
 // ============================================================================
+
+int HeavyLanePool::GetStandardWorkCount() const {
+    int count = 0;
+    {
+        std::lock_guard lock(m_poolMutex);
+        for (const auto& job : m_pendingJobs) {
+            if (job.type == JobType::Standard) ++count;
+        }
+        for (const auto& worker : m_workers) {
+            if (worker.state == WorkerState::BUSY) ++count;
+        }
+    }
+    {
+        std::lock_guard lock(m_resultMutex);
+        for (const auto& result : m_results) {
+            if (result.type == EventType::FullReady ||
+                result.type == EventType::LoadError) {
+                ++count;
+            }
+        }
+    }
+    return count;
+}
+
+bool HeavyLanePool::HasStandardWork(
+    ImageID imageId,
+    PaneSlot targetSlot) const {
+    {
+        std::lock_guard lock(m_poolMutex);
+        for (const auto& job : m_pendingJobs) {
+            if (job.type == JobType::Standard &&
+                job.imageId == imageId &&
+                job.targetSlot == targetSlot) {
+                return true;
+            }
+        }
+        for (const auto& worker : m_workers) {
+            if (worker.state == WorkerState::BUSY &&
+                worker.currentId == imageId) {
+                return true;
+            }
+        }
+    }
+    {
+        std::lock_guard lock(m_resultMutex);
+        for (const auto& result : m_results) {
+            if ((result.type == EventType::FullReady ||
+                 result.type == EventType::LoadError) &&
+                result.imageId == imageId &&
+                result.targetSlot == targetSlot) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
 
 HeavyLanePool::PoolStats HeavyLanePool::GetStats() const {
     PoolStats stats = {};

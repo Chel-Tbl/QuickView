@@ -13184,10 +13184,9 @@ void StartNavigation(HWND hwnd, std::wstring path, [[maybe_unused]] bool showOSD
     }
     ClearGamutWarningState(hwnd);
 
-    // Phase 1: zero-latency placeholder chain
-    // Cancel stale heavy work BEFORE Phase 1 to free CPU for placeholder rendering.
-    g_imageEngine->CancelHeavy();
-    
+    // Phase 1: zero-latency placeholder chain. HeavyLane cancellation is
+    // selective in NavigateTo; global cancellation here destroyed live
+    // lookahead on every key repeat.
     // [Fix] Invalidate TileManager immediately so stale tiles aren't drawn into new Titan surfaces!
     // If we only wait for Phase 2 DispatchImageLoad, 75ms of frames will draw old tiles on the new placeholder.
     if (g_imageEngine && g_imageEngine->GetTileManager()) {

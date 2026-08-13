@@ -137,10 +137,11 @@ void ImageEngine::UpdateConfig(const RuntimeConfig& cfg) {
     m_config = cfg;
 }
 
-// [v3.1] Cancel Heavy Lane when Fast Pass succeeds - prevents unnecessary decode
-void ImageEngine::CancelHeavy() {
+// FastLane produced the final frame; cancel only its redundant heavy decode.
+// Other lookahead jobs must continue warming the navigation direction.
+void ImageEngine::CancelHeavy(ImageID imageId, PaneSlot targetSlot) {
     if (m_heavyPool) {
-        m_heavyPool->CancelAll();
+        m_heavyPool->CancelImage(imageId, targetSlot);
     }
 }
 
@@ -779,17 +780,15 @@ std::vector<EngineEvent> ImageEngine::PollState() {
                 m_pendingPaths.erase(e.filePath);
             } else {
                 if (m_navigator) {
-                    int idx = m_navigator->FindIndex(e.filePath);
+                    const int idx = m_navigator->FindIndex(e.filePath);
                     if (idx != -1) {
-                         AddToCache(idx, e.filePath, e.rawFrame, e.metadata);
-                         
-                         // [v8.15] Remove from pending set
-                         {
-                             std::lock_guard lock(m_pendingMutex);
-                             m_pendingPaths.erase(e.filePath);
-                         }
+                        AddToCache(idx, e.filePath, e.rawFrame, e.metadata);
                     }
                 }
+                // FullReady is terminal even when the navigator changed before
+                // the result arrived; never leave a phantom pending marker.
+                std::lock_guard lock(m_pendingMutex);
+                m_pendingPaths.erase(e.filePath);
             }
         }
     }
@@ -1297,9 +1296,8 @@ void ImageEngine::FastLane::QueueWorker() {
                 if (isClear) QV_LOG("FastLane_Output", TraceLoggingString("FullReady", "Action"));
                 else QV_LOG("FastLane_Output", TraceLoggingString("PreviewReady", "Action"), TraceLoggingInt32(targetW, "TargetW"), TraceLoggingInt32(rawFrame.width, "RawW"));
                 
-                // [v3.1] If Fast Pass produced clear image, cancel Heavy Lane
                 if (isClear) {
-                    m_parent->CancelHeavy();
+                    m_parent->CancelHeavy(cmd.id, cmd.targetSlot);
                 }
             } else {
 
@@ -1423,19 +1421,19 @@ void ImageEngine::UpdateView(int currentIndex, QuickView::BrowseDirection dir) {
     PumpPrefetch();
 }
 
-void ImageEngine::ScheduleJob(int index, QuickView::Priority pri) {
+bool ImageEngine::ScheduleJob(int index, QuickView::Priority pri) {
     // 1. Bounds check
-    if (!m_navigator) return;
-    if (index < 0 || index >= (int)m_navigator->Count()) return;
+    if (!m_navigator) return false;
+    if (index < 0 || index >= (int)m_navigator->Count()) return false;
     
     // 2. Get file path
     const std::wstring& path = m_navigator->GetFile(index);
-    if (path.empty()) return;
+    if (path.empty()) return false;
     
     // 3. Check if already in cache
     {
         std::lock_guard lock(m_cacheMutex);
-        if (m_cache.count(path)) return; // Already cached
+        if (m_cache.count(path)) return false; // Already cached
     }
     
     // Prefetch jobs may run concurrently with visible navigation. HeavyLane
@@ -1469,7 +1467,7 @@ void ImageEngine::ScheduleJob(int index, QuickView::Priority pri) {
 
     if (pri != QuickView::Priority::Critical && isTitanCandidate) {
         QV_LOG("Engine_Trace", TraceLoggingString("NonTitan Skip", "Action"));
-        return;
+        return false;
     }
 
     if (pri != QuickView::Priority::Critical && m_prefetchPolicy.maxCacheMemory > 0 && !IsTitanModeEnabled()) {
@@ -1480,21 +1478,26 @@ void ImageEngine::ScheduleJob(int index, QuickView::Priority pri) {
                   TraceLoggingString("OverCacheCap", "Action"),
                   TraceLoggingFloat64(predictedSize / 1048576.0, "PredictedMB"),
                   TraceLoggingFloat64(m_prefetchPolicy.maxCacheMemory / 1048576.0, "CacheCapMB"));
-              return;
+              return false;
          }
     }
     
     if (info.type == CImageLoader::ImageType::TypeA_Sprint) {
-        // Small image: push to FastLane
+        {
+            std::lock_guard lock(m_pendingMutex);
+            if (!m_pendingPaths.insert(path).second) return false;
+        }
+        m_fastLane.Push(
+            path,
+            ComputePathHash(path),
+            m_targetHdrHeadroomStops.load(std::memory_order_relaxed));
+        return true;
+    } else if (info.type == CImageLoader::ImageType::TypeB_Heavy) {
+        const ImageID pathId = ComputePathHash(path);
+        if (m_heavyPool->HasStandardWork(pathId, PaneSlot::Primary)) return false;
         {
             std::lock_guard lock(m_pendingMutex);
             m_pendingPaths.insert(path);
-        }
-        m_fastLane.Push(path, ComputePathHash(path), m_targetHdrHeadroomStops.load(std::memory_order_relaxed));
-    } else if (info.type == CImageLoader::ImageType::TypeB_Heavy) {
-        {
-            std::lock_guard lock(m_pendingMutex);
-            if (!m_pendingPaths.insert(path).second) return;
         }
 
         const int poolPriority =
@@ -1503,14 +1506,16 @@ void ImageEngine::ScheduleJob(int index, QuickView::Priority pri) {
             (pri == QuickView::Priority::Low) ? 80 : 100;
         if (info.format == L"JXL") {
             m_heavyPool->SubmitFullDecode(
-                path, ComputePathHash(path), nullptr,
+                path, pathId, nullptr,
                 PaneSlot::Primary, 0, poolPriority);
         } else {
             m_heavyPool->Submit(
-                path, ComputePathHash(path), nullptr,
+                path, pathId, nullptr,
                 PaneSlot::Primary, 0, poolPriority);
         }
+        return true;
     }
+    return false;
 }
 
 void ImageEngine::PruneQueue(int currentIndex, QuickView::BrowseDirection /*dir*/) {
@@ -1587,35 +1592,29 @@ void ImageEngine::AddToCache(
             static_cast<uint64_t>(effectiveCacheLimit),
             static_cast<uint64_t>(m_currentCacheBytes) + growableBytes));
     }
-    while (m_currentCacheBytes + newSize > effectiveCacheLimit && !m_lruOrder.empty()) {
-        // Find victim from LRU tail
-        std::wstring victimPath = m_lruOrder.back();
-        auto vit = m_cache.find(victimPath);
-        
-        if (vit != m_cache.end()) {
-            int victimIndex = vit->second.sourceIndex;
-            
-            // Keep Zone: Cannot evict current ±1
-            // Use m_currentViewIndex which is updated in UpdateView
-            if (abs(victimIndex - m_currentViewIndex) <= 1) {
-                // Check if the TAIL item is protected. 
-                // If it is, we need to scan deeper or just stop eviction?
-                // If the tail is protected, it means we recently accessed it?
-                // No, LRU tail is Least Recently Used.
-                // If the neighbor is at the tail, it means we haven't touched it recently.
-                // But we must protect it.
-                // Complex handling: Move it to front (protect) and try next tail?
-                // For simplicity: If tail is protected, we try to evict the ONE BEFORE tail?
-                // Or just break loop and allow over-limit (Protection > Limit).
-                // "Safety Zone" > Memory Limit.
-                break; 
+    while (m_currentCacheBytes + newSize > effectiveCacheLimit &&
+           !m_lruOrder.empty()) {
+        // Protect current ±1, but continue scanning older entries instead of
+        // letting one protected tail item block all future cache turnover.
+        auto victimListIt = m_lruOrder.end();
+        for (auto candidate = m_lruOrder.end();
+             candidate != m_lruOrder.begin();) {
+            --candidate;
+            const auto cached = m_cache.find(*candidate);
+            if (cached == m_cache.end() ||
+                abs(cached->second.sourceIndex - m_currentViewIndex) > 1) {
+                victimListIt = candidate;
+                break;
             }
-            
-            // Evict victim
-            m_currentCacheBytes -= vit->second.sizeBytes;
-            m_cache.erase(vit);
         }
-        m_lruOrder.pop_back();
+        if (victimListIt == m_lruOrder.end()) break;
+
+        const auto cached = m_cache.find(*victimListIt);
+        if (cached != m_cache.end()) {
+            m_currentCacheBytes -= cached->second.sizeBytes;
+            m_cache.erase(cached);
+        }
+        m_lruOrder.erase(victimListIt);
     }
     
     // 4. Add to cache (ProtectionZone allows exceeding limit)
@@ -1770,46 +1769,36 @@ void ImageEngine::RequestFullMetadata() {
 
 
 // Continuously feed the worker pools instead of waiting for total engine idle.
-// Eight in-flight speculative jobs match this build's 16-core target: enough
-// throughput for uninterrupted 4K AVIF navigation without flooding all 256
-// lookahead entries into the decoder at once.
+// Capacity comes from actual queue/worker/result state, not the HUD's
+// pending-path set: cancelled decodes can legitimately leave a stale display
+// marker, but must never stop future lookahead work.
 void ImageEngine::PumpPrefetch() {
     if (m_prefetchQueue.empty() || !m_navigator) return;
 
     constexpr int maxSpeculativeInFlight = 8;
-    int speculativeInFlight = 0;
-    {
-        std::lock_guard lock(m_pendingMutex);
-        speculativeInFlight = static_cast<int>(m_pendingPaths.size());
+    int speculativeInFlight = m_heavyPool->GetStandardWorkCount();
+    speculativeInFlight += static_cast<int>(m_fastLane.GetQueueSize());
+    if (m_fastLane.m_isWorking.load(std::memory_order_relaxed)) {
+        ++speculativeInFlight;
     }
 
-    while (!m_prefetchQueue.empty() && speculativeInFlight < maxSpeculativeInFlight) {
+    while (!m_prefetchQueue.empty() &&
+           speculativeInFlight < maxSpeculativeInFlight) {
         const auto task = m_prefetchQueue.front();
         m_prefetchQueue.pop_front();
-        if (task.index < 0 || task.index >= static_cast<int>(m_navigator->Count())) continue;
-
-        const std::wstring& path = m_navigator->GetFile(task.index);
-        bool cached = false;
-        {
-            std::lock_guard lock(m_cacheMutex);
-            cached = m_cache.count(path) != 0;
-        }
-        if (cached) continue;
-
-        bool pending = false;
-        {
-            std::lock_guard lock(m_pendingMutex);
-            pending = m_pendingPaths.count(path) != 0;
-        }
-        if (pending) {
-            ++speculativeInFlight;
+        if (task.index < 0 ||
+            task.index >= static_cast<int>(m_navigator->Count())) {
             continue;
         }
 
-        ScheduleJob(task.index, task.priority);
+        const std::wstring& path = m_navigator->GetFile(task.index);
         {
-            std::lock_guard lock(m_pendingMutex);
-            if (m_pendingPaths.count(path)) ++speculativeInFlight;
+            std::lock_guard lock(m_cacheMutex);
+            if (m_cache.count(path)) continue;
+        }
+
+        if (ScheduleJob(task.index, task.priority)) {
+            ++speculativeInFlight;
         }
     }
 }

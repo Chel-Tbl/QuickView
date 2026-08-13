@@ -103,8 +103,8 @@ public:
     void SetWindow(HWND hwnd);
     void SetTargetHdrHeadroomStops(float stops);
     
-    // [v3.1] Cancel Heavy Lane when Fast Pass succeeds
-    void CancelHeavy();  // Implementation in ImageEngine.cpp
+    // Cancel only the redundant HeavyLane decode completed by FastLane.
+    void CancelHeavy(ImageID imageId, PaneSlot targetSlot);
     
     // Request full resolution decode for current image (used by JXL serial pipeline)
     void RequestFullDecode(const std::wstring& path, ImageID imageId, PaneSlot targetSlot = PaneSlot::Primary, uint64_t generationId = 0);
@@ -422,7 +422,7 @@ private:
         std::shared_ptr<QuickView::RawImageFrame> frame,
         const CImageLoader::ImageMetadata& metadata);
     void EvictCache(int currentIndex);
-    void ScheduleJob(int index, QuickView::Priority priority);
+    bool ScheduleJob(int index, QuickView::Priority priority);
     void PruneQueue(int currentIndex, QuickView::BrowseDirection dir);
 
 
