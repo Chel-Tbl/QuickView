@@ -1,9 +1,12 @@
 #include "pch.h"
 #include "ThumbnailManager.h"
+#include "ImageEngine.h"
+#include "ImageLoaderSimd.h"
 #include <algorithm>
 #include <cwctype>
 #include "FileNavigator.h"
 extern FileNavigator& g_navigator;
+extern ImageEngine* g_pImageEngine;
 
 namespace {
 unsigned GetPhysicalProcessorCount() {
@@ -34,6 +37,57 @@ unsigned GetPhysicalProcessorCount() {
     }
     return (std::max)(1u, coreCount);
 }
+bool TryLoadCachedFrame(const std::wstring& path, int targetSize,
+                        CImageLoader::ThumbData& out) {
+    if (!g_pImageEngine || targetSize <= 0) return false;
+
+    CImageLoader::ImageMetadata metadata;
+    const auto frame = g_pImageEngine->GetCachedImage(path, &metadata);
+    if (!frame || !frame->IsValid() || !frame->pixels ||
+        frame->width <= 0 || frame->height <= 0 ||
+        frame->stride < frame->width * 4 ||
+        metadata.ExifOrientation != 1 ||
+        (frame->format != QuickView::PixelFormat::BGRA8888 &&
+         frame->format != QuickView::PixelFormat::BGRX8888)) {
+        return false;
+    }
+
+    const int cropAxis = (std::min)(frame->width, frame->height);
+    if (cropAxis < targetSize) return false;
+    const float scale = static_cast<float>(targetSize) /
+                        static_cast<float>(cropAxis);
+    const int dstW =
+        (std::max)(1, static_cast<int>(std::lround(frame->width * scale)));
+    const int dstH =
+        (std::max)(1, static_cast<int>(std::lround(frame->height * scale)));
+    const int dstStride = dstW * 4;
+    out.pixels.resize(static_cast<size_t>(dstStride) * dstH);
+
+    if (dstW == frame->width && dstH == frame->height) {
+        for (int y = 0; y < dstH; ++y) {
+            memcpy(out.pixels.data() + static_cast<size_t>(y) * dstStride,
+                   frame->pixels + static_cast<size_t>(y) * frame->stride,
+                   dstStride);
+        }
+    } else {
+        ImageLoaderSimd::ResizeBilinear(
+            frame->pixels, frame->width, frame->height, frame->stride,
+            out.pixels.data(), dstW, dstH, dstStride);
+    }
+
+    out.width = dstW;
+    out.height = dstH;
+    out.stride = dstStride;
+    out.origWidth = metadata.Width > 0 ? static_cast<int>(metadata.Width)
+                                       : frame->width;
+    out.origHeight = metadata.Height > 0 ? static_cast<int>(metadata.Height)
+                                         : frame->height;
+    out.fileSize = metadata.FileSize;
+    out.isValid = true;
+    out.isBlurry = false;
+    out.loaderName = L"ImageEngine Cache";
+    return true;
+}
 } // namespace
 
 ThumbnailManager::ThumbnailManager() {}
@@ -55,6 +109,7 @@ void ThumbnailManager::Initialize(HWND hwnd, CImageLoader* pLoader) {
     for (unsigned i = 0; i < fastWorkerCount; ++i) {
         m_workerThreadsFast.emplace_back(&ThumbnailManager::WorkerLoopFast, this);
     }
+    m_workerThreadSlow = std::thread(&ThumbnailManager::WorkerLoopSlow, this);
 }
 
 void ThumbnailManager::Shutdown() {
@@ -267,26 +322,20 @@ void ThumbnailManager::FinishPendingTask(const Task& task) {
 }
 
 void ThumbnailManager::WorkerLoopFast() {
-    // Thumbnail extraction (especially via WIC/Shell) relies on COM components
     HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    
     while (m_running) {
         Task task;
         {
             std::unique_lock<std::mutex> lock(m_queueMutex);
-            m_cvFast.wait(lock, [this] { return !m_fastQueue.empty() || !m_running; });
-            
+            m_cvFast.wait(lock, [this] {
+                return !m_fastQueue.empty() || !m_running;
+            });
             if (!m_running) break;
-            
-            // Double check empty in case of spurious wake or stolen task (unlikely with one consumer per queue, but safe)
             if (m_fastQueue.empty()) continue;
-
             task = m_fastQueue.top();
             m_fastQueue.pop();
-            
         }
-        
-        // [Fix] Check if task is still valid for current view state
+
         if (task.generation != m_currentGeneration) {
             FinishPendingTask(task);
             continue;
@@ -294,48 +343,45 @@ void ThumbnailManager::WorkerLoopFast() {
 
         const int targetSize = task.targetSize;
         CImageLoader::ThumbData data;
-        HRESULT hr = m_pLoader->LoadThumbnail(task.path.c_str(), targetSize, &data);
+        const bool servedFromImageCache =
+            TryLoadCachedFrame(task.path, targetSize, data);
+        const HRESULT hr = servedFromImageCache
+                               ? S_OK
+                               : m_pLoader->LoadThumbnail(
+                                     task.path.c_str(), targetSize, &data);
         if (FAILED(hr) || !data.isValid) {
-            data.isValid = true; 
+            data.isValid = true;
             data.isFailed = true;
-            data.width = 1; data.height = 1; data.stride = 4;
-            data.pixels = { 0x80, 0x80, 0x80, 0xFF }; 
+            data.width = 1;
+            data.height = 1;
+            data.stride = 4;
+            data.pixels = {0x80, 0x80, 0x80, 0xFF};
             data.loaderName = L"Failure Placeholder";
         }
-        if (data.isValid) {
-            // Re-check generation after potentially long extraction
-            if (task.generation == m_currentGeneration) {
-                StoreDecodedThumbnail(task.imageId, std::move(data));
-                PostMessage(m_hwnd, WM_THUMB_KEY_READY, (WPARAM)task.imageId, 0);
-            }
+        if (data.isValid && task.generation == m_currentGeneration) {
+            StoreDecodedThumbnail(task.imageId, std::move(data));
+            PostMessage(m_hwnd, WM_THUMB_KEY_READY, (WPARAM)task.imageId, 0);
         }
         FinishPendingTask(task);
     }
-    
-    if (SUCCEEDED(coInitHr)) {
-        CoUninitialize();
-    }
+    if (SUCCEEDED(coInitHr)) CoUninitialize();
 }
 
 void ThumbnailManager::WorkerLoopSlow() {
-    // Thumbnail extraction (especially via WIC/Shell) relies on COM components
     HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    
     while (m_running) {
         Task task;
         {
             std::unique_lock<std::mutex> lock(m_queueMutex);
-            m_cvSlow.wait(lock, [this] { return !m_slowQueue.empty() || !m_running; });
-            
+            m_cvSlow.wait(lock, [this] {
+                return !m_slowQueue.empty() || !m_running;
+            });
             if (!m_running) break;
-            
             if (m_slowQueue.empty()) continue;
-
             task = m_slowQueue.top();
             m_slowQueue.pop();
-            
         }
-        
+
         if (task.generation != m_currentGeneration) {
             FinishPendingTask(task);
             continue;
@@ -343,27 +389,28 @@ void ThumbnailManager::WorkerLoopSlow() {
 
         const int targetSize = task.targetSize;
         CImageLoader::ThumbData data;
-        HRESULT hr = m_pLoader->LoadThumbnail(task.path.c_str(), targetSize, &data, true);
+        const bool servedFromImageCache =
+            TryLoadCachedFrame(task.path, targetSize, data);
+        const HRESULT hr = servedFromImageCache
+                               ? S_OK
+                               : m_pLoader->LoadThumbnail(
+                                     task.path.c_str(), targetSize, &data, true);
         if (FAILED(hr) || !data.isValid) {
-            data.isValid = true; 
+            data.isValid = true;
             data.isFailed = true;
-            data.width = 1; data.height = 1; data.stride = 4;
-            data.pixels = { 0x80, 0x80, 0x80, 0xFF }; 
+            data.width = 1;
+            data.height = 1;
+            data.stride = 4;
+            data.pixels = {0x80, 0x80, 0x80, 0xFF};
             data.loaderName = L"Failure Placeholder (Archive)";
         }
-        if (data.isValid) {
-            // Re-check generation after potentially long extraction
-            if (task.generation == m_currentGeneration) {
-                StoreDecodedThumbnail(task.imageId, std::move(data));
-                PostMessage(m_hwnd, WM_THUMB_KEY_READY, (WPARAM)task.imageId, 0);
-            }
+        if (data.isValid && task.generation == m_currentGeneration) {
+            StoreDecodedThumbnail(task.imageId, std::move(data));
+            PostMessage(m_hwnd, WM_THUMB_KEY_READY, (WPARAM)task.imageId, 0);
         }
         FinishPendingTask(task);
     }
-    
-    if (SUCCEEDED(coInitHr)) {
-        CoUninitialize();
-    }
+    if (SUCCEEDED(coInitHr)) CoUninitialize();
 }
 
 void ThumbnailManager::QueueRequest(size_t imageId, LPCWSTR path,

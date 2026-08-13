@@ -857,12 +857,15 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
     // ordinary follow-on scrolling and later launches effectively instant.
     if (m_mode == GalleryMode::FullGrid) {
         const int viewportSpan = endIdx - startIdx + 1;
-        const int prefetchStart = (std::max)(0, startIdx - viewportSpan);
+        // Keep speculation bounded: two adjacent screens, at most 128 items.
+        const int prefetchSpan = (std::min)(viewportSpan, 64);
+        const int prefetchStart = (std::max)(0, startIdx - prefetchSpan);
         const int prefetchEnd = (std::min)(
-            static_cast<int>(count) - 1, endIdx + viewportSpan);
+            static_cast<int>(count) - 1, endIdx + prefetchSpan);
         if (prefetchStart != m_thumbnailPrefetchStart ||
             prefetchEnd != m_thumbnailPrefetchEnd) {
             m_thumbnailPrefetchStart = prefetchStart;
+            m_thumbnailPrefetchEnd = prefetchEnd;
             const int prefetchSize = (std::max)(
                 256, static_cast<int>(std::ceil(gridCellW * 2.0f)));
             for (int i = prefetchStart; i <= prefetchEnd; ++i) {
