@@ -69,6 +69,7 @@ using namespace Microsoft::WRL;
 #include <cmath>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
 #include <atomic>
 #include <dwmapi.h>
 #include <ShellScalingApi.h>
@@ -144,6 +145,209 @@ void SyncDCompState(HWND hwnd, float winW, float winH, bool animate);
 #define WM_ROUTED_OPEN   (WM_APP + 10)  // [Phase 0] Reserved for pipe-routed file open
 constexpr UINT_PTR TIMER_ID_STARTUP_SHOW = 992;
 
+constexpr UINT WM_SUBFRAME_NAV_READY = WM_APP + 23;
+
+void NavigateEdge(HWND hwnd, bool toLast);
+static void FlushBufferedNavigation(HWND hwnd, int delta);
+
+template <size_t Capacity>
+class SubframeSpscQueue {
+    static_assert((Capacity & (Capacity - 1)) == 0);
+
+public:
+    bool TryPush(int8_t command) noexcept {
+        const uint64_t write = m_write.load(std::memory_order_relaxed);
+        if (write - m_read.load(std::memory_order_acquire) >= Capacity) {
+            return false;
+        }
+        m_commands[write & (Capacity - 1)] = command;
+        m_write.store(write + 1, std::memory_order_release);
+        return true;
+    }
+
+    bool TryPop(int8_t* command) noexcept {
+        return TryPopBefore(
+            m_write.load(std::memory_order_acquire), command);
+    }
+
+    bool TryPopBefore(uint64_t writeLimit, int8_t* command) noexcept {
+        const uint64_t read = m_read.load(std::memory_order_relaxed);
+        if (read >= writeLimit) return false;
+        *command = m_commands[read & (Capacity - 1)];
+        m_read.store(read + 1, std::memory_order_release);
+        return true;
+    }
+
+    uint64_t WriteSnapshot() const noexcept {
+        return m_write.load(std::memory_order_acquire);
+    }
+
+    bool Empty() const noexcept {
+        return m_read.load(std::memory_order_acquire) >=
+            m_write.load(std::memory_order_acquire);
+    }
+
+    void Reset() noexcept {
+        m_read.store(0, std::memory_order_relaxed);
+        m_write.store(0, std::memory_order_relaxed);
+    }
+
+private:
+    std::array<int8_t, Capacity> m_commands{};
+    alignas(64) std::atomic<uint64_t> m_write{0};
+    alignas(64) std::atomic<uint64_t> m_read{0};
+};
+// to the frame queue, and the DWM-synchronized UI message consumes one
+// immutable frame snapshot. Commands remain ordered; only adjacent equal
+// directions are folded at drain.
+class SubframeNavigationInput {
+public:
+    void Start(HWND hwnd) {
+        Stop();
+        m_captureQueue.Reset();
+        m_frameQueue.Reset();
+        m_hwnd.store(hwnd, std::memory_order_release);
+        m_running.store(true, std::memory_order_release);
+        m_thread = std::jthread([this](std::stop_token stopToken) {
+            WorkerLoop(stopToken);
+        });
+    }
+
+    void Stop() {
+        m_running.store(false, std::memory_order_release);
+        if (m_thread.joinable()) {
+            m_thread.request_stop();
+            m_wake.notify_all();
+            m_thread.join();
+        }
+        m_hwnd.store(nullptr, std::memory_order_release);
+        m_frameRequested.store(false, std::memory_order_release);
+        m_captureQueue.Reset();
+        m_frameQueue.Reset();
+    }
+    void Enqueue(int command) noexcept {
+        if (command == 0 ||
+            !m_running.load(std::memory_order_acquire)) {
+            return;
+        }
+        const int8_t encoded = static_cast<int8_t>(
+            std::clamp(command, -2, 2));
+        while (m_running.load(std::memory_order_acquire) &&
+               !m_captureQueue.TryPush(encoded)) {
+            m_wake.notify_one();
+            std::this_thread::yield();
+        }
+        m_wake.notify_one();
+    }
+
+    void DrainOnFrame(HWND hwnd) {
+        if (m_draining.exchange(true, std::memory_order_acq_rel)) return;
+
+        // Only commands published before this frame boundary belong to it.
+        m_frameRequested.store(false, std::memory_order_release);
+        const uint64_t writeLimit = m_frameQueue.WriteSnapshot();
+        int8_t command = 0;
+        int runDirection = 0;
+        int runLength = 0;
+        auto flushStepRun = [&] {
+            if (runLength <= 0) return;
+            FlushBufferedNavigation(
+                hwnd, runDirection * runLength);
+            runLength = 0;
+        };
+        while (m_frameQueue.TryPopBefore(writeLimit, &command)) {
+            if (command == -2 || command == 2) {
+                flushStepRun();
+                NavigateEdge(hwnd, command > 0);
+                continue;
+            }
+            const int direction = command > 0 ? 1 : -1;
+            if (runLength > 0 && direction != runDirection) {
+                flushStepRun();
+            }
+            runDirection = direction;
+            ++runLength;
+        }
+        flushStepRun();
+
+        m_draining.store(false, std::memory_order_release);
+        if (!m_frameQueue.Empty()) {
+            m_frameRequested.store(false, std::memory_order_release);
+            RequestFrame();
+        }
+        m_wake.notify_one();
+    }
+
+private:
+    void RequestFrame() {
+        if (m_frameRequested.exchange(
+                true, std::memory_order_acq_rel)) {
+            return;
+        }
+        const HWND hwnd = m_hwnd.load(std::memory_order_acquire);
+        if (hwnd) {
+            PostMessageW(hwnd, WM_SUBFRAME_NAV_READY, 0, 0);
+        }
+    }
+
+    void WorkerLoop(std::stop_token stopToken) {
+        while (!stopToken.stop_requested()) {
+            std::unique_lock lock(m_waitMutex);
+            m_wake.wait(lock, [&] {
+                return stopToken.stop_requested() ||
+                    (!m_frameRequested.load(std::memory_order_acquire) &&
+                     !m_captureQueue.Empty());
+            });
+            lock.unlock();
+            if (stopToken.stop_requested()) break;
+
+            int8_t command = 0;
+            while (m_captureQueue.TryPop(&command)) {
+                while (!stopToken.stop_requested() &&
+                       !m_frameQueue.TryPush(command)) {
+                    std::this_thread::yield();
+                }
+                if (stopToken.stop_requested()) break;
+            }
+            if (stopToken.stop_requested()) break;
+
+            // The dedicated input thread owns sub-frame timing. Wait for the
+            // compositor boundary, then include every command captured before
+            // that boundary in this frame's immutable batch.
+            DwmFlush();
+            while (m_captureQueue.TryPop(&command)) {
+                while (!stopToken.stop_requested() &&
+                       !m_frameQueue.TryPush(command)) {
+                    std::this_thread::yield();
+                }
+                if (stopToken.stop_requested()) break;
+            }
+            if (!stopToken.stop_requested()) RequestFrame();
+        }
+    }
+
+    static constexpr size_t QueueCapacity = 1u << 16;
+    SubframeSpscQueue<QueueCapacity> m_captureQueue;
+    SubframeSpscQueue<QueueCapacity> m_frameQueue;
+    std::jthread m_thread;
+    std::mutex m_waitMutex;
+    std::condition_variable m_wake;
+    std::atomic<HWND> m_hwnd{nullptr};
+    std::atomic<bool> m_frameRequested{false};
+    std::atomic<bool> m_running{false};
+    std::atomic<bool> m_draining{false};
+};
+
+SubframeNavigationInput g_subframeNavigation;
+
+static void QueueSubframeNavigation(int direction) noexcept {
+    g_subframeNavigation.Enqueue(direction);
+}
+
+
+static void QueueSubframeEdgeNavigation(bool toLast) noexcept {
+    g_subframeNavigation.Enqueue(toLast ? 2 : -2);
+}
 
 
 static const wchar_t* g_szClassName = L"QuickViewClass";
@@ -172,9 +376,6 @@ bool g_isDraggingFilmstrip = false;
 bool g_windowSizeRestoredFromConfig = false;
 static WINDOWPLACEMENT g_savedWindowPlacement = { sizeof(WINDOWPLACEMENT), 0, 0, {0,0}, {0,0}, {0,0,0,0} };
 
-#include <mutex>
-#include <condition_variable>
-#include <thread>
 
 struct AsyncSeekRequest {
     float targetProgress = -1.0f;
@@ -6759,7 +6960,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, [[maybe_unused]] LPWSTR lpCm
                 info.height = (int)fastInfo.height;
               if (info.format == L"Unknown" && !fastInfo.format.empty())
                 info.format = fastInfo.format;
-            }
+          }
           }
 
           std::wstring fmtUpper = info.format;
@@ -6831,6 +7032,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, [[maybe_unused]] LPWSTR lpCm
     g_toolbar.SetExifState(g_runtime.ShowInfoPanel);
     g_toolbar.SetPinned(g_config.LockBottomToolbar); // Lock toolbar from config
     
+    g_subframeNavigation.Start(hwnd);
     if (deferStartupShow) {
         SetTimer(hwnd, TIMER_ID_STARTUP_SHOW, 150, nullptr);
     } else {
@@ -6881,8 +7083,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, [[maybe_unused]] LPWSTR lpCm
     }
 
     MSG msg;
-    while (GetMessageW(&msg, NULL, 0, 0)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
-    
+    while (GetMessageW(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    g_subframeNavigation.Stop();
+
     // [Phase 0] Wait for all child viewer processes before tearing down.
     if (g_isMasterProcess) {
         QuickView::ProcessRouter::WaitForAllChildren();
@@ -7449,9 +7655,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
     case WM_TIMER: {
         if (wParam == IDT_SLIDESHOW) {
             if (g_slideshowState.IsActive && g_slideshowState.IsPlaying) {
-                if (CheckUnsavedChanges(hwnd)) {
-                    Navigate(hwnd, 1);
-                }
+                QueueSubframeNavigation(1);
             } else {
                 KillTimer(hwnd, IDT_SLIDESHOW);
             }
@@ -8005,7 +8209,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
         DestroyWindow(hwnd);
         return 0;
     }
-    case WM_DESTROY: g_thumbMgr.Shutdown(); PostQuitMessage(0); return 0;
+    case WM_DESTROY:
+        g_subframeNavigation.Stop();
+        g_thumbMgr.Shutdown();
+        PostQuitMessage(0);
+        return 0;
     
      // Mouse Interaction
      case WM_MOUSEMOVE: {
@@ -9107,9 +9315,14 @@ SKIP_EDGE_NAV:;
         // Invert if configured
         if (g_config.InvertXButton) direction = -direction;
         
-        if (direction != 0) Navigate(hwnd, direction);
+        if (direction != 0) QueueSubframeNavigation(direction);
         return TRUE;
     }
+
+    case WM_SUBFRAME_NAV_READY:
+        g_subframeNavigation.DrainOnFrame(hwnd);
+        RequestRepaint(PaintLayer::Image | PaintLayer::Dynamic);
+        return 0;
 
 
         
@@ -9660,8 +9873,8 @@ SKIP_EDGE_NAV:;
         ToolbarButtonID tbId = ToolbarButtonID::None;
         if (g_toolbar.OnClick((float)pt.x, (float)pt.y, tbId)) {
             switch (tbId) {
-                case ToolbarButtonID::Prev: if (CheckUnsavedChanges(hwnd)) Navigate(hwnd, -1); break;
-                case ToolbarButtonID::Next: if (CheckUnsavedChanges(hwnd)) Navigate(hwnd, 1); break;
+                case ToolbarButtonID::Prev: QueueSubframeNavigation(-1); break;
+                case ToolbarButtonID::Next: QueueSubframeNavigation(1); break;
                 case ToolbarButtonID::RotateL: PerformTransform(hwnd, TransformType::Rotate90CCW); break;
                 case ToolbarButtonID::RotateR: PerformTransform(hwnd, TransformType::Rotate90CW); break;
                 case ToolbarButtonID::FlipH:   PerformTransform(hwnd, TransformType::FlipHorizontal); break;
@@ -9874,14 +10087,14 @@ SKIP_EDGE_NAV:;
                     break;
                 case ToolbarButtonID::AnimPrevFrame:
                     if (g_slideshowState.IsActive) {
-                        Navigate(hwnd, -1);
+                        QueueSubframeNavigation(-1);
                     } else {
                         HandleAnimFrameStep(hwnd, false);
                     }
                     break;
                 case ToolbarButtonID::AnimNextFrame:
                     if (g_slideshowState.IsActive) {
-                        Navigate(hwnd, 1);
+                        QueueSubframeNavigation(1);
                     } else {
                         HandleAnimFrameStep(hwnd, true);
                     }
@@ -9956,7 +10169,7 @@ SKIP_EDGE_NAV:;
                     if (!g_config.DisableEdgeNavInCompare) {
                         int direction = AppContext::GetInstance().CompareCtrl->HandleEdgeNavClick(hwnd, pt);
                         if (direction != 0) {
-                            Navigate(hwnd, direction);
+                            QueueSubframeNavigation(direction);
                             return 0;
                         }
                     }
@@ -9979,7 +10192,7 @@ SKIP_EDGE_NAV:;
 
                     if (clickValid && direction != 0) {
                         ReleaseCapture();
-                        Navigate(hwnd, direction);
+                        QueueSubframeNavigation(direction);
                         return 0;
                     }
                 }
@@ -10031,8 +10244,8 @@ SKIP_EDGE_NAV:;
 
         if (g_config.ThumbWheelMode == 0) { // Navigate
             int direction = (delta > 0.0f) ? 1 : -1; // Positive is usually right, negative is left
-            if (delta != 0.0f && CheckUnsavedChanges(hwnd)) {
-                Navigate(hwnd, direction);
+            if (delta != 0.0f) {
+                QueueSubframeNavigation(direction);
             }
         } else if (g_config.ThumbWheelMode == 1) { // Zoom
             POINT pt;
@@ -10200,8 +10413,8 @@ SKIP_EDGE_NAV:;
 
             if (g_config.ThumbWheelMode == 0) { // Navigate
                 int direction = (delta > 0.0f) ? 1 : -1;
-                if (delta != 0.0f && CheckUnsavedChanges(hwnd)) {
-                    Navigate(hwnd, direction);
+                if (delta != 0.0f) {
+                    QueueSubframeNavigation(direction);
                 }
             } else if (g_config.ThumbWheelMode == 1) { // Zoom
                 POINT pt;
@@ -10274,8 +10487,8 @@ SKIP_EDGE_NAV:;
         if (IsCompareModeActive()) {
             if (shouldNavigate) {
                 int direction = (delta > 0.0f) ? -1 : 1;
-                if (delta != 0.0f && CheckUnsavedChanges(hwnd)) {
-                    Navigate(hwnd, direction);
+                if (delta != 0.0f) {
+                    QueueSubframeNavigation(direction);
                 }
                 return 0;
             }
@@ -10291,7 +10504,7 @@ SKIP_EDGE_NAV:;
         if (shouldNavigate) {
             const int direction = (delta > 0.0f) ? -1 : 1;
             if (delta != 0.0f) {
-                Navigate(hwnd, direction);
+                QueueSubframeNavigation(direction);
             }
             return 0;
         }
@@ -13673,6 +13886,74 @@ void Navigate(HWND hwnd, int direction) {
     }
 }
 
+static void FlushBufferedNavigation(HWND hwnd, int delta) {
+    if (delta == 0) return;
+
+    // These modes have multi-pane or cross-folder transitions whose commands
+    // are not algebraically collapsible. Preserve their exact FIFO semantics.
+    if (IsCompareModeActive() ||
+        g_runtime.NavTraverse ||
+        g_pairCompareSession) {
+        const int direction = delta > 0 ? 1 : -1;
+        for (int remaining = std::abs(delta);
+             remaining > 0;
+             --remaining) {
+            Navigate(hwnd, direction);
+        }
+        return;
+    }
+
+    auto& pane = GetPaneContext(PaneSlot::Primary);
+    auto& navigator = pane.navigator;
+    const int count = static_cast<int>(navigator.Count());
+    if (count <= 0 || !CheckUnsavedChanges(hwnd)) return;
+
+    const int current = navigator.Index();
+    if (current < 0 || current >= count) return;
+
+    int64_t target = static_cast<int64_t>(current) + delta;
+    const bool crossedBoundary = target < 0 || target >= count;
+    if (g_runtime.NavLoop) {
+        target %= count;
+        if (target < 0) target += count;
+    } else {
+        target = std::clamp<int64_t>(target, 0, count - 1);
+    }
+
+    const int targetIndex = static_cast<int>(target);
+    if (targetIndex == current) {
+        if (!g_runtime.NavLoop && crossedBoundary) {
+            g_osd.Show(
+                hwnd,
+                std::wstring(
+                    delta > 0
+                        ? AppStrings::OSD_LastImage
+                        : AppStrings::OSD_FirstImage),
+                false);
+        }
+        return;
+    }
+
+    navigator.SetIndex(targetIndex);
+    const std::wstring path = navigator.GetFile(targetIndex);
+    if (path.empty()) return;
+
+    pane.editState.Reset();
+    pane.view.Reset();
+    const QuickView::BrowseDirection browseDirection =
+        delta > 0
+            ? QuickView::BrowseDirection::FORWARD
+            : QuickView::BrowseDirection::BACKWARD;
+
+    if (crossedBoundary && g_runtime.NavLoop) {
+        wchar_t buffer[256];
+        swprintf_s(
+            buffer, L"[Loop] %d / %d", targetIndex + 1, count);
+        g_osd.Show(hwnd, buffer, false);
+    }
+    LoadImageAsync(hwnd, path, true, browseDirection);
+}
+
 void OnPaint(HWND hwnd) {
     static LARGE_INTEGER lastTick = {};
     static LARGE_INTEGER freq = {};
@@ -14888,7 +15169,7 @@ bool HandleHotkeyAction(HWND hwnd, HotkeyAction action) {
         if (alt && GetPaneContext(PaneSlot::Primary).resource.animator) {
             HandleAnimFrameStep(hwnd, true);
         } else {
-            Navigate(hwnd, 1);
+            QueueSubframeNavigation(1);
         }
         return true;
 
@@ -14896,16 +15177,16 @@ bool HandleHotkeyAction(HWND hwnd, HotkeyAction action) {
         if (alt && GetPaneContext(PaneSlot::Primary).resource.animator) {
             HandleAnimFrameStep(hwnd, false);
         } else {
-            Navigate(hwnd, -1);
+            QueueSubframeNavigation(-1);
         }
         return true;
 
     case HotkeyAction::NavFirst:
-        NavigateEdge(hwnd, false);
+        QueueSubframeEdgeNavigation(false);
         return true;
 
     case HotkeyAction::NavLast:
-        NavigateEdge(hwnd, true);
+        QueueSubframeEdgeNavigation(true);
         return true;
 
     case HotkeyAction::ZoomIn:
@@ -15078,8 +15359,8 @@ bool HandleHotkeyAction(HWND hwnd, HotkeyAction action) {
                 g_osd.Show(hwnd, AppStrings::OSD_AnimPaused, true);
             }
             RequestRepaint(PaintLayer::Dynamic);
-        } else if (CheckUnsavedChanges(hwnd)) {
-            Navigate(hwnd, 1);
+        } else {
+            QueueSubframeNavigation(1);
         }
         return true;
 
