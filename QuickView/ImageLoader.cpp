@@ -3555,7 +3555,8 @@ static void ApplyOrientationToThumbData(CImageLoader::ThumbData *pData,
 }
 
 HRESULT CImageLoader::LoadShellThumbnail(LPCWSTR filePath, int targetSize,
-                                         ThumbData *pData) {
+                                         ThumbData *pData,
+                                         bool generateOnMiss) {
   if (!filePath || !pData || !m_wicFactory)
     return E_INVALIDARG;
 
@@ -3600,10 +3601,10 @@ HRESULT CImageLoader::LoadShellThumbnail(LPCWSTR filePath, int targetSize,
     discardUndersized(hBitmap);
   }
 
-  // On a cache miss, ask the Windows provider for a 2x crop-axis thumbnail.
-  // This populates the persistent cache while preserving enough pixels for
-  // square center-crops; direct libavif remains the fallback.
-  if (!hBitmap) {
+  // Speculative work may populate the persistent Shell cache. Visible misses
+  // fall through to the parallel in-process AVIF path instead of waiting on
+  // the Shell provider.
+  if (generateOnMiss && !hBitmap) {
     if (needsCropAxisOverscan) {
       const int generatedEdge = (std::min)(targetSize * 2, 2048);
       const SIZE generatedSize = {generatedEdge, generatedEdge};
@@ -4199,7 +4200,8 @@ static HRESULT RasterizeSvgThumbnail(const std::vector<uint8_t> &xmlData,
 }
 
 HRESULT CImageLoader::LoadThumbnail(LPCWSTR filePath, int targetSize,
-                                    ThumbData *pData, bool allowSlow) {
+                                    ThumbData *pData, bool allowSlow,
+                                    bool generateShellOnMiss) {
   if (!filePath || !pData)
     return E_INVALIDARG;
   pData->isValid = false;
@@ -4209,13 +4211,35 @@ HRESULT CImageLoader::LoadThumbnail(LPCWSTR filePath, int targetSize,
   // normal navigation cheap. It can decode many independent AVIF previews
   // substantially faster than full-frame libavif work; the direct mapped
   // codec path below remains the fallback.
-  if (SUCCEEDED(LoadShellThumbnail(filePath, targetSize, pData))) {
+  if (SUCCEEDED(LoadShellThumbnail(
+          filePath, targetSize, pData, generateShellOnMiss))) {
+    DownscaleThumbDataIfNeeded(pData, targetSize);
+    return S_OK;
+  }
+  const std::wstring_view extension = QuickView::ExtensionOf(filePath);
+  const bool isAvifPath =
+      QuickView::ExtEqualsIgnoreCase(extension, L".avif") ||
+      QuickView::ExtEqualsIgnoreCase(extension, L".avifs");
+  if (isAvifPath && wcschr(filePath, L'|') == nullptr &&
+      SUCCEEDED(LoadThumbAVIFFile(filePath, targetSize, pData)) &&
+      pData->isValid) {
     DownscaleThumbDataIfNeeded(pData, targetSize);
     return S_OK;
   }
   const ImageHeaderInfo headerInfo = PeekHeader(filePath);
   const uint64_t fallbackFileSize =
       static_cast<uint64_t>(headerInfo.fileSize);
+  int decodeTargetWidth = targetSize;
+  int decodeTargetHeight = targetSize;
+  if (targetSize > 0 && headerInfo.width > 0 && headerInfo.height > 0) {
+    const int cropAxis = (std::min)(headerInfo.width, headerInfo.height);
+    const double scale =
+        static_cast<double>(targetSize) / static_cast<double>(cropAxis);
+    decodeTargetWidth = (std::max)(
+        1, static_cast<int>(std::ceil(headerInfo.width * scale)));
+    decodeTargetHeight = (std::max)(
+        1, static_cast<int>(std::ceil(headerInfo.height * scale)));
+  }
 
   std::vector<uint8_t> extractedData;
   const uint8_t *mappedData = nullptr;
@@ -4319,19 +4343,30 @@ HRESULT CImageLoader::LoadThumbnail(LPCWSTR filePath, int targetSize,
        pathLower.ends_with(L".heic") || pathLower.ends_with(L".heif") ||
        pathLower.ends_with(L".hif")) &&
       mappedData && mappedSize > 0) {
-    ImageMetadata meta;
+    const uint64_t sourcePixels =
+        static_cast<uint64_t>((std::max)(0, headerInfo.width)) *
+        static_cast<uint64_t>((std::max)(0, headerInfo.height));
+    if (!allowSlow && sourcePixels > 40000000ULL) return E_ABORT;
     HRESULT hr = LoadThumbAVIF_Proxy(mappedData, mappedSize, targetSize, pData,
-                                     allowSlow, &meta);
+                                     allowSlow, nullptr);
     if (SUCCEEDED(hr) && pData->isValid) {
       DownscaleThumbDataIfNeeded(pData, targetSize);
-      if (meta.Width > 0 && meta.Height > 0) {
-        pData->origWidth = meta.Width;
-        pData->origHeight = meta.Height;
-      }
-      pData->fileSize =
-          meta.FileSize > 0 ? meta.FileSize : static_cast<uint64_t>(mappedSize);
+      pData->fileSize = static_cast<uint64_t>(mappedSize);
       pData->loaderName = format == L"HEIC" ? L"libavif/HEIF" : L"libavif";
       return S_OK;
+    }
+    if (hr == E_ABORT) return E_ABORT;
+    if (pathStr.find(L"|") == std::wstring::npos) {
+      ComPtr<IWICBitmap> fullBitmap;
+      if (SUCCEEDED(LoadAVIF(filePath, &fullBitmap, nullptr, 1)) &&
+          fullBitmap &&
+          SUCCEEDED(CopyWicBitmapToThumbData(fullBitmap.Get(), pData))) {
+        DownscaleThumbDataIfNeeded(pData, targetSize);
+        PopulateThumbOriginalInfo(
+            headerInfo, static_cast<uint64_t>(mappedSize), pData);
+        pData->loaderName = L"libavif Gallery";
+        return S_OK;
+      }
     }
   }
 
@@ -4339,8 +4374,8 @@ HRESULT CImageLoader::LoadThumbnail(LPCWSTR filePath, int targetSize,
       mappedSize > 0) {
     ImageMetadata meta;
     // Gallery thumbnails must never use Titan's transparent fake base.
-    // If a cheap real thumbnail is unavailable, we fall through to the
-    // normal decode path instead of returning an empty/transparent result.
+    // If a cheap real thumbnail is unavailable, fall through to the normal
+    // decode path instead of returning an empty/transparent result.
     HRESULT hr = LoadThumbJXL_DC(mappedData, mappedSize, pData, &meta, false);
     if (SUCCEEDED(hr) && pData->isValid) {
       const bool isFakeThumb =
@@ -4409,8 +4444,8 @@ HRESULT CImageLoader::LoadThumbnail(LPCWSTR filePath, int targetSize,
   // 1. Unified Codec Dispatch (Primary)
   DecodeContext ctx;
   ctx.forcePreview = true;
-  ctx.targetWidth = targetSize;
-  ctx.targetHeight = targetSize;
+  ctx.targetWidth = decodeTargetWidth;
+  ctx.targetHeight = decodeTargetHeight;
   ctx.allocator.ctx = pData;
   ctx.allocator.pfn = [](void *c, size_t s) -> uint8_t * {
     auto *d = static_cast<ThumbData *>(c);
@@ -4471,7 +4506,7 @@ HRESULT CImageLoader::LoadThumbnail(LPCWSTR filePath, int targetSize,
   ComPtr<IWICBitmap> wicBitmap;
   std::wstring wicLoader;
   HRESULT wicHr = LoadToMemory(filePath, &wicBitmap, &wicLoader, false, {},
-                               targetSize, targetSize);
+                               decodeTargetWidth, decodeTargetHeight);
   if (SUCCEEDED(wicHr) && wicBitmap) {
     HRESULT copyHr = CopyWicBitmapToThumbData(wicBitmap.Get(), pData);
     if (SUCCEEDED(copyHr)) {
@@ -5119,8 +5154,99 @@ HRESULT CImageLoader::LoadWebP(LPCWSTR filePath, IWICBitmap **ppBitmap,
 // ----------------------------------------------------------------------------
 // AVIF (libavif + dav1d)
 // ----------------------------------------------------------------------------
+HRESULT CImageLoader::LoadThumbAVIFFile(LPCWSTR filePath, int targetSize,
+                                        ThumbData *pData) {
+  if (!filePath || !pData || targetSize <= 0)
+    return E_INVALIDARG;
+
+  std::pmr::vector<uint8_t> avifData(std::pmr::get_default_resource());
+  if (!ReadFileToPMR(filePath, avifData, {}))
+    return E_FAIL;
+
+  avifDecoder *decoder = avifDecoderCreate();
+  if (!decoder)
+    return E_OUTOFMEMORY;
+  decoder->strictFlags = AVIF_STRICT_DISABLED;
+  decoder->maxThreads = 1;
+
+  avifResult result =
+      avifDecoderSetIOMemory(decoder, avifData.data(), avifData.size());
+  if (result == AVIF_RESULT_OK)
+    result = avifDecoderParse(decoder);
+  if (result == AVIF_RESULT_OK)
+    result = avifDecoderNextImage(decoder);
+  if (result != AVIF_RESULT_OK) {
+    avifDecoderDestroy(decoder);
+    return E_FAIL;
+  }
+
+  const int originalWidth = static_cast<int>(decoder->image->width);
+  const int originalHeight = static_cast<int>(decoder->image->height);
+  const int cropAxis = (std::min)(originalWidth, originalHeight);
+
+  avifRGBImage rgb;
+  avifRGBImageSetDefaults(&rgb, decoder->image);
+  rgb.format = AVIF_RGB_FORMAT_BGRA;
+  rgb.depth = 8;
+  rgb.alphaPremultiplied = AVIF_TRUE;
+  rgb.maxThreads = 1;
+
+  const int fullStride = CalculateAlignedStride(originalWidth, 4);
+  std::vector<uint8_t> fullPixels(
+      static_cast<size_t>(fullStride) * originalHeight);
+  rgb.pixels = fullPixels.data();
+  rgb.rowBytes = static_cast<uint32_t>(fullStride);
+
+  result = avifImageYUVToRGB(decoder->image, &rgb);
+  avifDecoderDestroy(decoder);
+  if (result != AVIF_RESULT_OK)
+    return E_FAIL;
+
+  int outputWidth = originalWidth;
+  int outputHeight = originalHeight;
+  if (cropAxis > targetSize) {
+    const double scale =
+        static_cast<double>(targetSize) / static_cast<double>(cropAxis);
+    outputWidth = (std::max)(
+        1, static_cast<int>(std::ceil(originalWidth * scale)));
+    outputHeight = (std::max)(
+        1, static_cast<int>(std::ceil(originalHeight * scale)));
+    if (originalWidth <= originalHeight) {
+      outputWidth = targetSize;
+    } else {
+      outputHeight = targetSize;
+    }
+  }
+
+  pData->width = outputWidth;
+  pData->height = outputHeight;
+  pData->stride = CalculateAlignedStride(outputWidth, 4);
+  pData->pixels.resize(
+      static_cast<size_t>(pData->stride) * outputHeight);
+  if (outputWidth == originalWidth && outputHeight == originalHeight) {
+    for (int y = 0; y < outputHeight; ++y) {
+      memcpy(pData->pixels.data() + static_cast<size_t>(y) * pData->stride,
+             fullPixels.data() + static_cast<size_t>(y) * fullStride,
+             static_cast<size_t>(outputWidth) * 4);
+    }
+  } else {
+    ImageLoaderSimd::ResizeBilinear(
+        fullPixels.data(), originalWidth, originalHeight, fullStride,
+        pData->pixels.data(), outputWidth, outputHeight, pData->stride);
+  }
+
+  pData->origWidth = originalWidth;
+  pData->origHeight = originalHeight;
+  pData->fileSize = static_cast<uint64_t>(avifData.size());
+  pData->isValid = true;
+  pData->isBlurry = cropAxis > targetSize;
+  pData->loaderName = L"libavif Gallery";
+  return S_OK;
+}
+
 HRESULT CImageLoader::LoadAVIF(LPCWSTR filePath, IWICBitmap **ppBitmap,
-                               ImageMetadata *pMetadata) {
+                               ImageMetadata *pMetadata,
+                               unsigned maxThreads) {
   if (!filePath || !ppBitmap)
     return E_INVALIDARG;
 
@@ -5134,13 +5260,13 @@ HRESULT CImageLoader::LoadAVIF(LPCWSTR filePath, IWICBitmap **ppBitmap,
   if (!decoder)
     return E_OUTOFMEMORY;
 
-  // Enable multi-threaded decoding
-  unsigned int threads = std::thread::hardware_concurrency();
-  if (threads > 0) {
-    decoder->maxThreads = threads;
-  } else {
-    decoder->maxThreads = 4; // Fallback sensible default
-  }
+  // Full-view decodes retain the normal hardware-wide budget. Gallery callers
+  // pass one thread because independent visible cells already occupy all
+  // physical cores.
+  const unsigned hardwareThreads =
+      (std::max)(1u, std::thread::hardware_concurrency());
+  decoder->maxThreads =
+      maxThreads > 0 ? maxThreads : hardwareThreads;
 
   // Disable strict flags to improve compatibility with non-compliant or
   // experimental files
@@ -11789,96 +11915,62 @@ HRESULT CImageLoader::LoadThumbAVIF_Proxy(const uint8_t *data, size_t size,
       pMetadata->FormatDetails += L" (Deep)"; // cosmetic
   }
 
-  // [Success Strategy] "Too Big to Thumb"
-  // If image > 50 MP (e.g. 8K x 6K) AND we didn't find Exif thumb above:
-  // It will take > 1.0s to decode. The Heavy Lane will ALSO take > 1.0s to
-  // decode. If we decode here, we delay Heavy Lane (due to thread
-  // contention/memory). Better to RETURN FAILURE (specifically S_FALSE for
-  // 'skipped') to let Heavy Lane start immediately. 50MP = 50,000,000 pixels.
-  // 9449*9449 = 89MP.
-  uint64_t pixelCount =
-      (uint64_t)decoder->image->width * (uint64_t)decoder->image->height;
-  if (pixelCount > 40000000 && !allowSlow) { // > 40MP threshold
+
+  // Decode the primary presentation. libavif assembles still-image grids
+  // behind NextImage; treating their tile count as animation frames rejects
+  // ordinary AVIF screenshots.
+  result = avifDecoderNextImage(decoder);
+  if (result != AVIF_RESULT_OK) {
     avifDecoderDestroy(decoder);
-    // Returning E_FAIL would trigger WIC (if we didn't block it in caller).
-    // Returning S_OK with invalid pData?
-    // Let's return E_ABORT or similar.
-    return E_ABORT;
+    return E_FAIL;
   }
 
-  // 4. Decode Strategy (STE)
+  if (decoder->image->icc.size > 0 && pMetadata) {
+    std::wstring desc = CImageLoader::ParseICCProfileName(
+        decoder->image->icc.data, decoder->image->icc.size);
+    if (!desc.empty())
+      pMetadata->ColorSpace = desc;
+  }
 
-  // [STE Level 2] Smart Sampling - Center Tile / Frame
-  // If ImageCount > 1, it's either an Animation or a Grid (HEIC/AVIF
-  // Collection). Decoding the middle item is often a good representation and
-  // faster than stitching.
-  if (decoder->imageCount > 1) {
-    // Pick middle frame
-    // Pick middle frame
-    uint32_t midIndex = decoder->imageCount / 2;
-    result = avifDecoderNthImage(decoder, midIndex);
-    if (result != AVIF_RESULT_OK) {
-      avifDecoderDestroy(decoder);
-      return E_FAIL;
-    }
-    // Proceed to Scaling...
-  } else {
-    // Single Image Logic
-
-
-    result = avifDecoderNextImage(decoder);
-    if (result != AVIF_RESULT_OK) {
-      avifDecoderDestroy(decoder);
-      return E_FAIL;
-    }
-
-    if (decoder->image->icc.size > 0 && pMetadata) {
-      std::wstring desc = CImageLoader::ParseICCProfileName(
-          decoder->image->icc.data, decoder->image->icc.size);
-      if (!desc.empty())
-        pMetadata->ColorSpace = desc;
+  if (pMetadata) {
+    const wchar_t *subsamp = L"";
+    switch (decoder->image->yuvFormat) {
+    case AVIF_PIXEL_FORMAT_YUV444:
+      subsamp = L"4:4:4";
+      break;
+    case AVIF_PIXEL_FORMAT_YUV422:
+      subsamp = L"4:2:2";
+      break;
+    case AVIF_PIXEL_FORMAT_YUV420:
+      subsamp = L"4:2:0";
+      break;
+    case AVIF_PIXEL_FORMAT_YUV400:
+      subsamp = L"Gray";
+      break;
+    default:
+      subsamp = L"";
+      break;
     }
 
-    if (pMetadata) {
-      const wchar_t *subsamp = L"";
-      switch (decoder->image->yuvFormat) {
-      case AVIF_PIXEL_FORMAT_YUV444:
-        subsamp = L"4:4:4";
-        break;
-      case AVIF_PIXEL_FORMAT_YUV422:
-        subsamp = L"4:2:2";
-        break;
-      case AVIF_PIXEL_FORMAT_YUV420:
-        subsamp = L"4:2:0";
-        break;
-      case AVIF_PIXEL_FORMAT_YUV400:
-        subsamp = L"Gray";
-        break;
-      default:
-        subsamp = L"";
-        break;
-      }
+    bool isIdentity = (decoder->image->matrixCoefficients ==
+                       AVIF_MATRIX_COEFFICIENTS_IDENTITY);
+    const wchar_t *coding = isIdentity ? L"RGB" : L"YUV";
+    bool isAnim = (decoder->imageCount > 1);
+    bool hasAlpha =
+        (decoder->image->alphaPlane != nullptr) || decoder->alphaPresent;
 
-      // Heuristic for Lossless: Matrix=Identity (RGB) + 4:4:4 usually implies
-      // lossless (or high quality)
-      bool isIdentity = (decoder->image->matrixCoefficients ==
-                         AVIF_MATRIX_COEFFICIENTS_IDENTITY);
-      const wchar_t *coding = isIdentity ? L"RGB" : L"YUV";
-
-      // Animation
-      bool isAnim = (decoder->imageCount > 1);
-
-      // Alpha
-      bool hasAlpha =
-          (decoder->image->alphaPlane != nullptr) || decoder->alphaPresent;
-
-      wchar_t fmtBuf[128];
-      // Format: "10-bit YUV 4:2:0 (Alpha) Seq"
-      swprintf_s(fmtBuf, L"%d-bit %s%s%s%s%s", decoder->image->depth, coding,
-                 (subsamp[0] ? L" " : L""), subsamp,
-                 (hasAlpha ? L" (Alpha)" : L""), (isAnim ? L" Seq" : L""));
-      pMetadata->FormatDetails = fmtBuf;
-    }
+    wchar_t fmtBuf[128];
+    swprintf_s(fmtBuf, L"%d-bit %s%s%s%s%s", decoder->image->depth, coding,
+               (subsamp[0] ? L" " : L""), subsamp,
+               (hasAlpha ? L" (Alpha)" : L""), (isAnim ? L" Seq" : L""));
+    pMetadata->FormatDetails = fmtBuf;
+  }
+  const uint64_t pixelCount =
+      static_cast<uint64_t>(decoder->image->width) *
+      static_cast<uint64_t>(decoder->image->height);
+  if (pixelCount > 40000000 && !allowSlow) {
+    avifDecoderDestroy(decoder);
+    return E_ABORT;
   }
 
   // 5. YUV-Space Downscaling

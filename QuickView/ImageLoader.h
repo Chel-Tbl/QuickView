@@ -439,7 +439,8 @@ public:
 
   // Core Thumbnail API
   HRESULT LoadThumbnail(LPCWSTR filePath, int targetSize, ThumbData *pData,
-                        bool allowSlow = true);
+                        bool allowSlow = true,
+                        bool generateShellOnMiss = true);
 
   // [JXL Global Runner] Global thread pool singleton to avoid creation overhead for each decode
   static void *GetJxlRunner();
@@ -462,7 +463,7 @@ private:
 
   // Windows Shell Thumbnail Extractor
   HRESULT LoadShellThumbnail(LPCWSTR filePath, int targetSize,
-                             ThumbData *pData);
+                             ThumbData *pData, bool generateOnMiss);
 
   ComPtr<IWICImagingFactory> m_wicFactory;
 
@@ -479,10 +480,14 @@ private:
   HRESULT LoadThumbWebPFromMemory(const uint8_t *pBuf, size_t size,
                                   int targetSize,
                                   ThumbData *pData); // Helper for WebP buffers
+  HRESULT LoadThumbAVIFFile(LPCWSTR filePath, int targetSize,
+                            ThumbData *pData);
 
   // LoadPNG REMOVED - replaced by LoadPngWuffs
   HRESULT LoadWebP(LPCWSTR filePath, IWICBitmap **ppBitmap, ImageMetadata* pMetadata = nullptr); // libwebp
-  HRESULT LoadAVIF(LPCWSTR filePath, IWICBitmap **ppBitmap, ImageMetadata* pMetadata = nullptr); // libavif + dav1d
+  HRESULT LoadAVIF(LPCWSTR filePath, IWICBitmap **ppBitmap,
+                   ImageMetadata* pMetadata = nullptr,
+                   unsigned maxThreads = 0); // libavif + dav1d
   HRESULT LoadJXL(LPCWSTR filePath, IWICBitmap **ppBitmap, ImageMetadata* pMetadata = nullptr);  // libjxl
   HRESULT LoadRaw(LPCWSTR filePath, IWICBitmap **ppBitmap, bool forceFullDecode, ImageMetadata* pMetadata = nullptr); // libraw
 

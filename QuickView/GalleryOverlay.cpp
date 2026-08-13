@@ -957,7 +957,7 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
 
     // Keep bounded adjacent rows requested until their cache entries exist.
     // QueueRequest deduplicates cached/in-flight work; retrying on completion
-    // repaints closes races where a priority-window change dropped a task.
+    // closes races where a priority-window change dropped a task.
     if (m_mode == GalleryMode::FullGrid &&
         m_gridProgress >= 0.999f) {
         const int prefetchSize = (std::max)(

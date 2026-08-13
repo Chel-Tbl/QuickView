@@ -1373,10 +1373,24 @@ void ImageEngine::SetGalleryPriorityMode(bool active) {
         return;
     }
 
-    // This queue is owned by the UI thread. Existing normal-viewer jobs finish
-    // and remain reusable. On exit, the next real navigation UpdateView call
-    // resumes lookahead with the final selected index and direction.
+    // Full-grid thumbnails own the decode budget. Stop queued/running
+    // speculative full-frame work, but preserve the currently displayed frame
+    // and every completed cache entry for exact thumbnail reuse.
     m_prefetchQueue.clear();
+    if (active && m_heavyPool) {
+        const ImageID currentId =
+            m_currentImageId.load(std::memory_order_acquire);
+        m_heavyPool->CancelOthers(currentId, PaneSlot::Primary);
+
+        std::lock_guard lock(m_pendingMutex);
+        for (auto it = m_pendingPaths.begin(); it != m_pendingPaths.end();) {
+            if (ComputePathHash(*it) != currentId) {
+                it = m_pendingPaths.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
 }
 
 void ImageEngine::TriggerPendingJxlHeavy() {

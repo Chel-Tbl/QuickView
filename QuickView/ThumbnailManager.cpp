@@ -9,34 +9,6 @@ extern FileNavigator& g_navigator;
 extern ImageEngine* g_pImageEngine;
 
 namespace {
-unsigned GetPhysicalProcessorCount() {
-    DWORD byteCount = 0;
-    if (GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr,
-                                         &byteCount) ||
-        GetLastError() != ERROR_INSUFFICIENT_BUFFER || byteCount == 0) {
-        return (std::max)(1u, std::thread::hardware_concurrency() / 2u);
-    }
-
-    std::vector<unsigned char> buffer(byteCount);
-    auto* info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(
-        buffer.data());
-    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, info,
-                                          &byteCount)) {
-        return (std::max)(1u, std::thread::hardware_concurrency() / 2u);
-    }
-
-    unsigned coreCount = 0;
-    const auto* end = buffer.data() + byteCount;
-    auto* cursor = buffer.data();
-    while (cursor < end) {
-        const auto* entry = reinterpret_cast<
-            const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(cursor);
-        if (entry->Relationship == RelationProcessorCore) ++coreCount;
-        if (entry->Size == 0) break;
-        cursor += entry->Size;
-    }
-    return (std::max)(1u, coreCount);
-}
 bool IsThumbnailAdequate(const CImageLoader::ThumbData& data,
                          int requestedSize) {
     const int decodedCropAxis = (std::min)(data.width, data.height);
@@ -110,10 +82,13 @@ void ThumbnailManager::Initialize(HWND hwnd, CImageLoader* pLoader) {
     m_pLoader = pLoader;
     m_running = true;
 
-    // One independent thumbnail job per physical core. AVIF target previews
-    // are single-threaded, so this is a hard 16-core decode budget.
+    // One-thread AVIF jobs benefit from SMT, but filling every logical sibling
+    // adds contention. A 3/4 logical-core budget is faster on this 16C/32T
+    // workload while retaining headroom for UI upload and composition.
+    const unsigned logicalProcessors =
+        (std::max)(1u, std::thread::hardware_concurrency());
     const unsigned fastWorkerCount =
-        (std::min)(16u, GetPhysicalProcessorCount());
+        (std::max)(1u, logicalProcessors - logicalProcessors / 4u);
     m_workerThreadsFast.reserve(fastWorkerCount);
     for (unsigned i = 0; i < fastWorkerCount; ++i) {
         m_workerThreadsFast.emplace_back(&ThumbnailManager::WorkerLoopFast, this);
@@ -420,7 +395,20 @@ void ThumbnailManager::WorkerLoopFast() {
                                ? S_OK
                                : m_pLoader->LoadThumbnail(
                                      task.path.c_str(), targetSize, &data,
-                                     false);
+                                     true, false);
+        if (hr == E_ABORT) {
+            std::lock_guard<std::mutex> lock(m_queueMutex);
+            auto pending = m_pendingTasks.find(task.imageId);
+            if (pending != m_pendingTasks.end() &&
+                pending->second.generation == task.generation &&
+                task.generation == m_currentGeneration) {
+                task.isFastLane = false;
+                task.speculative = false;
+                m_slowQueue.push(std::move(task));
+                m_cvSlow.notify_one();
+            }
+            continue;
+        }
         if (FAILED(hr) || !data.isValid) {
             data.isValid = true;
             data.isFailed = true;
@@ -469,7 +457,7 @@ void ThumbnailManager::WorkerLoopSlow() {
                                ? S_OK
                                : m_pLoader->LoadThumbnail(
                                      task.path.c_str(), targetSize, &data,
-                                     true);
+                                     true, true);
         if (FAILED(hr) || !data.isValid) {
             data.isValid = true;
             data.isFailed = true;
