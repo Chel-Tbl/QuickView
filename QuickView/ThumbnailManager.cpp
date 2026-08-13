@@ -385,7 +385,6 @@ void ThumbnailManager::WorkerLoopFast() {
         if (stored) {
             PostMessage(m_hwnd, WM_THUMB_KEY_READY, (WPARAM)task.imageId, 0);
         }
-        FinishPendingTask(task);
     }
     if (SUCCEEDED(coInitHr)) CoUninitialize();
 }
