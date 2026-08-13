@@ -47,11 +47,18 @@ public:
 
     // Preload range (Virtualization hints)
     // priorityCenter: index that viewer is looking at
-    void UpdateOptimizedPriority(int startIdx, int endIdx, int priorityCenter);
+    void UpdateOptimizedPriority(int retainStart, int retainEnd,
+                                 int visibleStart, int visibleEnd,
+                                 int priorityCenter);
 
-    // Dynamic queue management
-    void QueueRequest(size_t imageId, LPCWSTR path, int itemIndex, int targetSize);
+    // Speculative work uses the single background lane so all physical-core
+    // workers remain available after a viewport jump.
+    void QueueRequest(size_t imageId, LPCWSTR path, int itemIndex,
+                      int targetSize, bool speculative = false);
     void ClearQueue();
+    void AcknowledgeReadyNotification() {
+        m_readyNotificationPending.store(false, std::memory_order_release);
+    }
 
 private:
     struct CacheEntry {
@@ -97,6 +104,7 @@ private:
         int targetSize;
         bool isFastLane;      // Tag to verify lane if needed
         uint64_t generation;  // Track when this task was created
+        bool speculative = false;
         // [New] Archive-aware sorting
         bool isArchive = false;
         int archiveIndex = -1;
@@ -125,19 +133,24 @@ private:
     std::unordered_map<size_t, uint64_t> m_pendingTasks;
     std::atomic<bool> m_running = false;
     std::atomic<uint64_t> m_currentGeneration{ 0 };
+    std::atomic<bool> m_readyNotificationPending{ false };
     int m_priorityStart = -1;
     int m_priorityEnd = -1;
     int m_priorityCenter = -1;
+    int m_priorityVisibleStart = -1;
+    int m_priorityVisibleEnd = -1;
 
     void WorkerLoopFast();
     void WorkerLoopSlow();
     void FinishPendingTask(const Task& task);
+    void PostReadyNotification(size_t imageId);
+    bool IsTaskVisible(const Task& task);
     
     void EvictLRU();
     void AddToLRU(size_t imageId, size_t size);
     bool StoreDecodedThumbnail(size_t imageId, CImageLoader::ThumbData&& data);
     void TouchLRU(size_t imageId);
 
-    const size_t MAX_CACHE_SIZE = 512 * 1024 * 1024; // [v6.0.6] Increased to 512MB for 4K/8K assets
+    const size_t MAX_CACHE_SIZE = 1024ULL * 1024 * 1024;
     const size_t MAX_CACHE_COUNT = 2000;
 };

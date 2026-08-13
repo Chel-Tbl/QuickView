@@ -161,6 +161,9 @@ public:
     void SetNavigator(FileNavigator* nav) { m_navigator = nav; }
     void UpdateView(int currentIndex, QuickView::BrowseDirection dir);
     void SetPrefetchPolicy(const PrefetchPolicy& policy);
+    // Temporarily stop admitting speculative full-frame work while FullGrid
+    // owns the decode budget. Existing cache entries and active jobs survive.
+    void SetGalleryPriorityMode(bool active);
     const PrefetchPolicy& GetPrefetchPolicy() const { return m_prefetchPolicy; }
     size_t GetCacheMemoryUsage() const;
     int GetCacheItemCount() const;
@@ -394,6 +397,7 @@ private:
     PrefetchPolicy m_prefetchPolicy;
     std::atomic<int> m_currentViewIndex{-1};
     std::atomic<int> m_lastDirectionInt{0}; // [v8.15] Atomic: -1=Back, 0=Idle, 1=Forward
+    std::atomic<bool> m_galleryPriorityMode{false};
     
     // [v8.15] Track pending images for HUD PENDING (blue) display
     std::unordered_set<std::wstring> m_pendingPaths;

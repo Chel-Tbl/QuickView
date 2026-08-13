@@ -3564,8 +3564,14 @@ HRESULT CImageLoader::LoadShellThumbnail(LPCWSTR filePath, int targetSize,
                                            IID_PPV_ARGS(&imageFactory));
   if (FAILED(hr) || !imageFactory)
     return hr;
-
-  SIZE size = {targetSize, targetSize};
+  const std::wstring_view extension = QuickView::ExtensionOf(filePath);
+  const bool needsCropAxisOverscan =
+      QuickView::ExtEqualsIgnoreCase(extension, L".avif") ||
+      QuickView::ExtEqualsIgnoreCase(extension, L".avifs");
+  const int cacheEdge = needsCropAxisOverscan
+      ? (std::min)(targetSize * 2, 2048)
+      : targetSize;
+  SIZE size = {cacheEdge, cacheEdge};
   HBITMAP hBitmap = nullptr;
 
   auto discardUndersized = [&](HBITMAP& bitmap) {
@@ -3585,7 +3591,7 @@ HRESULT CImageLoader::LoadShellThumbnail(LPCWSTR filePath, int targetSize,
       &hBitmap);
   discardUndersized(hBitmap);
 
-  if (!hBitmap && targetSize <= 256) {
+  if (!hBitmap && !needsCropAxisOverscan && targetSize < 256) {
     const SIZE fallbackSize = {256, 256};
     hr = imageFactory->GetImage(
         fallbackSize,
@@ -3598,9 +3604,7 @@ HRESULT CImageLoader::LoadShellThumbnail(LPCWSTR filePath, int targetSize,
   // This populates the persistent cache while preserving enough pixels for
   // square center-crops; direct libavif remains the fallback.
   if (!hBitmap) {
-    const std::wstring_view extension = QuickView::ExtensionOf(filePath);
-    if (QuickView::ExtEqualsIgnoreCase(extension, L".avif") ||
-        QuickView::ExtEqualsIgnoreCase(extension, L".avifs")) {
+    if (needsCropAxisOverscan) {
       const int generatedEdge = (std::min)(targetSize * 2, 2048);
       const SIZE generatedSize = {generatedEdge, generatedEdge};
       hr = imageFactory->GetImage(
@@ -3684,6 +3688,7 @@ HRESULT CImageLoader::LoadShellThumbnail(LPCWSTR filePath, int targetSize,
 
   return S_OK;
 }
+
 
 HRESULT CImageLoader::LoadThumbJPEG(LPCWSTR filePath, int targetSize,
                                     ThumbData *pData) {
@@ -4200,17 +4205,17 @@ HRESULT CImageLoader::LoadThumbnail(LPCWSTR filePath, int targetSize,
   pData->isValid = false;
   pData->pixels.clear();
 
-  // 0. Highest Priority: Windows Shell Thumbnail Cache (Insanely fast for
-  // pre-cached heavy RAWs)
+  // Reuse the same persistent Windows thumbnail provider that makes repeat
+  // normal navigation cheap. It can decode many independent AVIF previews
+  // substantially faster than full-frame libavif work; the direct mapped
+  // codec path below remains the fallback.
   if (SUCCEEDED(LoadShellThumbnail(filePath, targetSize, pData))) {
-    // Shell cache buckets can return 768px for a 256px request. Compact the
-    // CPU/GPU cache to the requested crop axis or one viewport exceeds 512MB
-    // and evicts itself forever.
     DownscaleThumbDataIfNeeded(pData, targetSize);
     return S_OK;
   }
   const ImageHeaderInfo headerInfo = PeekHeader(filePath);
-  const uint64_t fallbackFileSize = static_cast<uint64_t>(headerInfo.fileSize);
+  const uint64_t fallbackFileSize =
+      static_cast<uint64_t>(headerInfo.fileSize);
 
   std::vector<uint8_t> extractedData;
   const uint8_t *mappedData = nullptr;
@@ -11820,11 +11825,6 @@ HRESULT CImageLoader::LoadThumbAVIF_Proxy(const uint8_t *data, size_t size,
   } else {
     // Single Image Logic
 
-    // [STE Level 3] Circuit Breaker (Strict Budget)
-    if (targetSize > 0 && !allowSlow) {
-      avifDecoderDestroy(decoder);
-      return E_ABORT;
-    }
 
     result = avifDecoderNextImage(decoder);
     if (result != AVIF_RESULT_OK) {
@@ -11922,36 +11922,30 @@ HRESULT CImageLoader::LoadThumbAVIF_Proxy(const uint8_t *data, size_t size,
   // Use multi-threaded conversion if available
   rgb.maxThreads = decoder->maxThreads;
 
-  result = avifRGBImageAllocatePixels(&rgb);
-  if (result != AVIF_RESULT_OK) {
-    avifDecoderDestroy(decoder);
-    return E_OUTOFMEMORY;
-  }
+  pData->width = static_cast<int>(rgb.width);
+  pData->height = static_cast<int>(rgb.height);
+  pData->stride = CalculateAlignedStride(pData->width, 4);
+  pData->pixels.resize(
+      static_cast<size_t>(pData->stride) * pData->height);
+  rgb.pixels = pData->pixels.data();
+  rgb.rowBytes = static_cast<uint32_t>(pData->stride);
 
   result = avifImageYUVToRGB(decoder->image, &rgb);
   if (result != AVIF_RESULT_OK) {
-    avifRGBImageFreePixels(&rgb);
+    pData->pixels.clear();
     avifDecoderDestroy(decoder);
     return E_FAIL;
   }
 
-  // 7. Output to ThumbData
-  pData->width = rgb.width;
-  pData->height = rgb.height;
-  pData->stride = rgb.rowBytes;
-  pData->origWidth = origW; // Keep original dims
+  // 7. Output metadata. RGB conversion wrote directly into ThumbData.
+  pData->origWidth = origW;
   pData->origHeight = origH;
-
-  // Copy pixels
-  size_t outSize = rgb.rowBytes * rgb.height;
-  pData->pixels.assign(rgb.pixels, rgb.pixels + outSize);
   pData->isValid = true;
   pData->isBlurry =
       (targetSize > 0); // Blurry if scaled, Clear if full (FastPass)
   result = AVIF_RESULT_OK;
 
   // 8. Cleanup
-  avifRGBImageFreePixels(&rgb);
   avifDecoderDestroy(decoder);
 
   return (result == AVIF_RESULT_OK) ? S_OK : E_FAIL;

@@ -3,6 +3,7 @@
 #include "GalleryOverlay.h"
 #include "Toolbar.h"
 #include "ThumbnailManager.h"
+#include "ImageEngine.h"
 #include "ImageTypes.h"
 #include "FileNavigator.h"
 #include "EditState.h"
@@ -21,6 +22,7 @@ extern RuntimeConfig g_runtime;
 extern std::wstring& g_imagePath;
 extern void SaveConfig();
 extern D2D1_SIZE_F GetVisualImageSize();
+extern ImageEngine* g_pImageEngine;
 
 
 // Helper to center crop
@@ -110,6 +112,10 @@ void GalleryOverlay::Open(int currentIndex, GalleryMode targetMode) {
     // final grid layout so virtualization and visible thumbnail work are exact
     // on the first paint.
     if (targetMode == GalleryMode::FullGrid) m_gridProgress = 1.0f;
+    if (g_pImageEngine) {
+        g_pImageEngine->SetGalleryPriorityMode(
+            targetMode == GalleryMode::FullGrid);
+    }
     m_selectedIndex = currentIndex;
     
     // Save and hide Info Panel (Only for FullGrid, keep open for Filmstrip)
@@ -138,8 +144,6 @@ void GalleryOverlay::Open(int currentIndex, GalleryMode targetMode) {
     m_gridScrollbarHover = false;
     m_gridScrollbarDragging = false;
     m_gridScrollbarDragOffset = 0.0f;
-    m_thumbnailPrefetchStart = -1;
-    m_thumbnailPrefetchEnd = -1;
     
     RequestRepaint(QuickView::PaintLayer::Gallery);
 }
@@ -159,6 +163,7 @@ void GalleryOverlay::Close(bool keepSelection) {
         m_selectedIndex = -1;
     }
     if (m_pThumbMgr) m_pThumbMgr->ClearQueue();
+    if (g_pImageEngine) g_pImageEngine->SetGalleryPriorityMode(false);
     
     // Restore Info Panel if it was hidden on Open
     if (m_restoreInfoPanel) {
@@ -175,6 +180,10 @@ void GalleryOverlay::SetMode(GalleryMode mode) {
     if (m_mode == mode) return;
     m_mode = mode;
     m_targetGridProgress = (mode == GalleryMode::FullGrid) ? 1.0f : 0.0f;
+    if (g_pImageEngine) {
+        g_pImageEngine->SetGalleryPriorityMode(
+            mode == GalleryMode::FullGrid);
+    }
     if (mode == GalleryMode::FullGrid) {
         m_needsEnsureVisible = true;
     }
@@ -726,7 +735,12 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
         // Retain complete adjacent rows in the work queue. Previously the
         // visible-only priority range discarded this lookahead on each paint.
         if (m_gridProgress >= 0.999f) {
-            const int prefetchRows = (std::max)(1, 64 / gridCols);
+            const int lookaheadItems = g_pImageEngine
+                ? (std::max)(
+                      1, g_pImageEngine->GetPrefetchPolicy().lookAheadCount)
+                : 64;
+            const int prefetchRows =
+                (std::max)(1, (lookaheadItems + gridCols - 1) / gridCols);
             prefetchStart =
                 (std::max)(0, (firstRow - prefetchRows) * gridCols);
             prefetchEnd = (std::min)(
@@ -739,7 +753,7 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
     }
 
     m_pThumbMgr->UpdateOptimizedPriority(
-        prefetchStart, prefetchEnd, centerIdx);
+        prefetchStart, prefetchEnd, startIdx, endIdx, centerIdx);
     
     // Clip drawing area to the visual panel area
     pDC->PushAxisAlignedClip(panelRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -871,10 +885,22 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
         }
     };
     
-    // Phase 1: Draw all standard (non-selected, non-hovered) thumbnails first
-    for (int i = startIdx; i <= endIdx; ++i) {
-        if (i != m_selectedIndex && i != m_hoverIndex) {
-            drawItem(i);
+    // Seed center-out. Workers wake as requests arrive, so ascending index
+    // order let the first batch start at the top edge before center tasks
+    // existed in the priority queue.
+    for (int distance = 0;
+         centerIdx - distance >= startIdx ||
+         centerIdx + distance <= endIdx;
+         ++distance) {
+        const int left = centerIdx - distance;
+        if (left >= startIdx && left <= endIdx &&
+            left != m_selectedIndex && left != m_hoverIndex) {
+            drawItem(left);
+        }
+        const int right = centerIdx + distance;
+        if (distance > 0 && right >= startIdx && right <= endIdx &&
+            right != m_selectedIndex && right != m_hoverIndex) {
+            drawItem(right);
         }
     }
     
@@ -888,22 +914,18 @@ void GalleryOverlay::Render(ID2D1DeviceContext *pDC, const D2D1_SIZE_F &size,
         drawItem(m_hoverIndex);
     }
 
-    // Once visible jobs are queued, warm complete adjacent rows on both
-    // sides. The retained priority range prevents later repaints from
-    // cancelling this bounded lookahead.
+    // Keep bounded adjacent rows requested until their cache entries exist.
+    // QueueRequest deduplicates cached/in-flight work; retrying on completion
+    // repaints closes races where a priority-window change dropped a task.
     if (m_mode == GalleryMode::FullGrid &&
-        m_gridProgress >= 0.999f &&
-        (prefetchStart != m_thumbnailPrefetchStart ||
-         prefetchEnd != m_thumbnailPrefetchEnd)) {
-        m_thumbnailPrefetchStart = prefetchStart;
-        m_thumbnailPrefetchEnd = prefetchEnd;
+        m_gridProgress >= 0.999f) {
         const int prefetchSize = (std::max)(
             256, static_cast<int>(std::ceil(gridCellW * 2.0f)));
         for (int i = prefetchStart; i <= prefetchEnd; ++i) {
             if (i >= startIdx && i <= endIdx) continue;
             m_pThumbMgr->QueueRequest(
                 m_pNav->GetImageID(i), m_pNav->GetFile(i).c_str(), i,
-                prefetchSize);
+                prefetchSize, true);
         }
     }
     

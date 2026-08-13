@@ -9317,6 +9317,7 @@ SKIP_EDGE_NAV:;
         return 0;
         
     case WM_THUMB_KEY_READY:
+        g_thumbMgr.AcknowledgeReadyNotification();
         // Redraw only Gallery layer when thumbnail is ready
         if (g_gallery.IsVisible()) {
             RequestRepaint(PaintLayer::Gallery);

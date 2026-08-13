@@ -149,6 +149,8 @@ void ThumbnailManager::ClearCache() {
     m_slowQueue = std::priority_queue<Task, std::vector<Task>, std::greater<Task>>();
     m_priorityStart = -1;
     m_priorityEnd = -1;
+    m_priorityVisibleStart = -1;
+    m_priorityVisibleEnd = -1;
     m_priorityCenter = -1;
 }
 
@@ -215,25 +217,31 @@ ComPtr<ID2D1Bitmap> ThumbnailManager::GetThumbnail(
     return nullptr;
 }
 
-void ThumbnailManager::UpdateOptimizedPriority(int startIdx, int endIdx,
-                                               int priorityCenter) {
+void ThumbnailManager::UpdateOptimizedPriority(
+    int retainStart, int retainEnd, int visibleStart, int visibleEnd,
+    int priorityCenter) {
     std::lock_guard<std::mutex> lock(m_queueMutex);
-    if (startIdx == m_priorityStart && endIdx == m_priorityEnd &&
+    if (retainStart == m_priorityStart && retainEnd == m_priorityEnd &&
+        visibleStart == m_priorityVisibleStart &&
+        visibleEnd == m_priorityVisibleEnd &&
         priorityCenter == m_priorityCenter) {
         return;
     }
 
-    m_priorityStart = startIdx;
-    m_priorityEnd = endIdx;
+    m_priorityStart = retainStart;
+    m_priorityEnd = retainEnd;
+    m_priorityVisibleStart = visibleStart;
+    m_priorityVisibleEnd = visibleEnd;
     m_priorityCenter = priorityCenter;
 
-    auto reprioritize = [&](auto& queue) {
-        using Queue = std::decay_t<decltype(queue)>;
-        Queue updated;
+    decltype(m_fastQueue) updatedFast;
+    decltype(m_slowQueue) updatedSlow;
+    auto drain = [&](auto& queue) {
         while (!queue.empty()) {
             Task task = queue.top();
             queue.pop();
-            if (task.itemIndex < startIdx || task.itemIndex > endIdx) {
+            if (task.itemIndex < retainStart ||
+                task.itemIndex > retainEnd) {
                 if (auto pending = m_pendingTasks.find(task.imageId);
                     pending != m_pendingTasks.end() &&
                     pending->second == task.generation) {
@@ -241,16 +249,29 @@ void ThumbnailManager::UpdateOptimizedPriority(int startIdx, int endIdx,
                 }
                 continue;
             }
-            task.priorityDistance = std::abs(task.itemIndex - priorityCenter);
-            updated.push(std::move(task));
+
+            const bool visible =
+                task.itemIndex >= visibleStart &&
+                task.itemIndex <= visibleEnd;
+            if (visible) task.speculative = false;
+            task.priorityDistance =
+                std::abs(task.itemIndex - priorityCenter);
+            if (task.isFastLane && !task.speculative) {
+                updatedFast.push(std::move(task));
+            } else {
+                updatedSlow.push(std::move(task));
+            }
         }
-        queue = std::move(updated);
     };
 
-    // A scrollbar jump must not wait behind thumbnails from the old viewport.
-    // In-flight work is allowed to finish and remains cached.
-    reprioritize(m_fastQueue);
-    reprioritize(m_slowQueue);
+    // Promote newly visible AVIF tasks from the speculative lane while
+    // discarding queued work from the old viewport.
+    drain(m_fastQueue);
+    drain(m_slowQueue);
+    m_fastQueue = std::move(updatedFast);
+    m_slowQueue = std::move(updatedSlow);
+    m_cvFast.notify_all();
+    m_cvSlow.notify_one();
 }
 
 // Helper (Internal or Public?) - Let's make it Public for Overlay to use iteratively
@@ -338,6 +359,21 @@ void ThumbnailManager::FinishPendingTask(const Task& task) {
     }
 }
 
+
+void ThumbnailManager::PostReadyNotification(size_t imageId) {
+    if (!m_readyNotificationPending.exchange(
+            true, std::memory_order_acq_rel)) {
+        PostMessage(m_hwnd, WM_THUMB_KEY_READY,
+                    static_cast<WPARAM>(imageId), 0);
+    }
+}
+
+bool ThumbnailManager::IsTaskVisible(const Task& task) {
+    std::lock_guard<std::mutex> lock(m_queueMutex);
+    return task.itemIndex >= m_priorityVisibleStart &&
+           task.itemIndex <= m_priorityVisibleEnd;
+}
+
 void ThumbnailManager::WorkerLoopFast() {
     HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     while (m_running) {
@@ -365,7 +401,8 @@ void ThumbnailManager::WorkerLoopFast() {
         const HRESULT hr = servedFromImageCache
                                ? S_OK
                                : m_pLoader->LoadThumbnail(
-                                     task.path.c_str(), targetSize, &data);
+                                     task.path.c_str(), targetSize, &data,
+                                     false);
         if (FAILED(hr) || !data.isValid) {
             data.isValid = true;
             data.isFailed = true;
@@ -381,9 +418,10 @@ void ThumbnailManager::WorkerLoopFast() {
         }
         // Clear pending before waking the UI. A higher-size request made by
         // that paint must be admitted rather than lost behind this task.
+        const bool shouldNotify = IsTaskVisible(task);
         FinishPendingTask(task);
-        if (stored) {
-            PostMessage(m_hwnd, WM_THUMB_KEY_READY, (WPARAM)task.imageId, 0);
+        if (stored && shouldNotify) {
+            PostReadyNotification(task.imageId);
         }
     }
     if (SUCCEEDED(coInitHr)) CoUninitialize();
@@ -403,6 +441,7 @@ void ThumbnailManager::WorkerLoopSlow() {
             task = m_slowQueue.top();
             m_slowQueue.pop();
         }
+
 
         if (task.generation != m_currentGeneration) {
             FinishPendingTask(task);
@@ -430,16 +469,18 @@ void ThumbnailManager::WorkerLoopSlow() {
         if (data.isValid && task.generation == m_currentGeneration) {
             stored = StoreDecodedThumbnail(task.imageId, std::move(data));
         }
+        const bool shouldNotify = IsTaskVisible(task);
         FinishPendingTask(task);
-        if (stored) {
-            PostMessage(m_hwnd, WM_THUMB_KEY_READY, (WPARAM)task.imageId, 0);
+        if (stored && shouldNotify) {
+            PostReadyNotification(task.imageId);
         }
     }
     if (SUCCEEDED(coInitHr)) CoUninitialize();
 }
 
 void ThumbnailManager::QueueRequest(size_t imageId, LPCWSTR path,
-                                    int itemIndex, int targetSize) {
+                                    int itemIndex, int targetSize,
+                                    bool speculative) {
     const int requestedSize = std::clamp(targetSize, 64, 1024);
     {
         std::lock_guard<std::mutex> cacheLock(m_cacheMutex);
@@ -478,6 +519,7 @@ void ThumbnailManager::QueueRequest(size_t imageId, LPCWSTR path,
         m_priorityCenter >= 0 ? std::abs(itemIndex - m_priorityCenter) : 0;
     t.targetSize = requestedSize;
     t.generation = m_currentGeneration;
+    t.speculative = speculative;
 
     // Detect if this is a virtual archive path
     std::wstring archivePath;
@@ -500,7 +542,7 @@ void ThumbnailManager::QueueRequest(size_t imageId, LPCWSTR path,
         QuickView::ExtEqualsIgnoreCase(e, L".webp");
     t.isFastLane = isFast;
 
-    if (isFast) {
+    if (isFast && !speculative) {
         m_fastQueue.push(t);
         m_cvFast.notify_one();
     } else {
@@ -519,6 +561,8 @@ void ThumbnailManager::ClearQueue() {
     m_pendingTasks.clear();
     m_priorityStart = -1;
     m_priorityEnd = -1;
+    m_priorityVisibleStart = -1;
+    m_priorityVisibleEnd = -1;
     m_priorityCenter = -1;
 }
 

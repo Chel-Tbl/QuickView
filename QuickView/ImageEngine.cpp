@@ -1367,6 +1367,28 @@ void ImageEngine::SetPrefetchPolicy(const PrefetchPolicy& policy) {
     m_prefetchPolicy = policy;
 }
 
+void ImageEngine::SetGalleryPriorityMode(bool active) {
+    if (m_galleryPriorityMode.exchange(
+            active, std::memory_order_acq_rel) == active) {
+        return;
+    }
+
+    // This queue is owned by the UI thread. Let already-running normal-viewer
+    // jobs finish so their decoded frames remain reusable by the gallery.
+    m_prefetchQueue.clear();
+    if (!active && m_navigator) {
+        const int currentIndex = m_currentViewIndex.load();
+        if (currentIndex >= 0) {
+            const int direction = m_lastDirectionInt.load();
+            const QuickView::BrowseDirection browseDirection =
+                direction < 0 ? QuickView::BrowseDirection::BACKWARD
+                : direction > 0 ? QuickView::BrowseDirection::FORWARD
+                                : QuickView::BrowseDirection::IDLE;
+            UpdateView(currentIndex, browseDirection);
+        }
+    }
+}
+
 void ImageEngine::TriggerPendingJxlHeavy() {
     if (!m_pendingJxlHeavyPath.empty() && m_pendingJxlHeavyId != 0) {
         QV_LOG("PollState_Route", TraceLoggingString("JXL Sequential TriggerHeavy", "Action"));
@@ -1414,8 +1436,13 @@ void ImageEngine::UpdateView(int currentIndex, QuickView::BrowseDirection dir) {
     // visible work enters HeavyLane at a higher priority.
     PruneQueue(currentIndex, dir);
     
-    // 4. If prefetch disabled, stop here
-    if (!m_prefetchPolicy.enablePrefetch) return;
+    // FullGrid has its own physical-core thumbnail scheduler. Do not admit
+    // additional full-frame lookahead while visible cells are unresolved.
+    if (m_galleryPriorityMode.load(std::memory_order_acquire) ||
+        !m_prefetchPolicy.enablePrefetch) {
+        m_prefetchQueue.clear();
+        return;
+    }
 
     m_prefetchQueue.clear();
 
@@ -1813,7 +1840,10 @@ void ImageEngine::RequestFullMetadata() {
 // pending-path set: cancelled decodes can legitimately leave a stale display
 // marker, but must never stop future lookahead work.
 void ImageEngine::PumpPrefetch() {
-    if (m_prefetchQueue.empty() || !m_navigator) return;
+    if (m_galleryPriorityMode.load(std::memory_order_acquire) ||
+        m_prefetchQueue.empty() || !m_navigator) {
+        return;
+    }
 
     constexpr int maxSpeculativeInFlight = 8;
     int speculativeInFlight = m_heavyPool->GetStandardWorkCount();
