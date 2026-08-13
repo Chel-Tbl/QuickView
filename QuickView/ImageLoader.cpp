@@ -1,6 +1,7 @@
 #include "pch.h"
 #include <DirectXPackedVector.h>
 #include <cstdint>
+#include <cmath>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -39,6 +40,7 @@ extern struct AppConfig g_config;
 
 using namespace QuickView;
 #include "FileNavigator.h"
+#include "ColorMath.h"
 #include "ImageLoaderSimd.h"
 #include "MappedFile.h" // [Opt]
 #include "TinyExrLoader.h"
@@ -4207,10 +4209,9 @@ HRESULT CImageLoader::LoadThumbnail(LPCWSTR filePath, int targetSize,
   pData->isValid = false;
   pData->pixels.clear();
 
-  // Reuse the same persistent Windows thumbnail provider that makes repeat
-  // normal navigation cheap. It can decode many independent AVIF previews
-  // substantially faster than full-frame libavif work; the direct mapped
-  // codec path below remains the fallback.
+  // Reuse the persistent Windows thumbnail provider when it already has a
+  // color-managed rendition. Misses fall through to the deterministic local
+  // AVIF pipeline below; both routes now produce SDR sRGB Gallery pixels.
   if (SUCCEEDED(LoadShellThumbnail(
           filePath, targetSize, pData, generateShellOnMiss))) {
     DownscaleThumbDataIfNeeded(pData, targetSize);
@@ -4220,12 +4221,17 @@ HRESULT CImageLoader::LoadThumbnail(LPCWSTR filePath, int targetSize,
   const bool isAvifPath =
       QuickView::ExtEqualsIgnoreCase(extension, L".avif") ||
       QuickView::ExtEqualsIgnoreCase(extension, L".avifs");
-  if (isAvifPath && wcschr(filePath, L'|') == nullptr &&
-      SUCCEEDED(LoadThumbAVIFFile(filePath, targetSize, pData)) &&
-      pData->isValid) {
-    DownscaleThumbDataIfNeeded(pData, targetSize);
-    return S_OK;
+  if (isAvifPath && wcschr(filePath, L'|') == nullptr) {
+    const HRESULT directAvifHr =
+        LoadThumbAVIFFile(filePath, targetSize, pData);
+    if (SUCCEEDED(directAvifHr) && pData->isValid) {
+      DownscaleThumbDataIfNeeded(pData, targetSize);
+      return S_OK;
+    }
+    if (directAvifHr == E_NOTIMPL)
+      return generateShellOnMiss ? E_NOTIMPL : E_ABORT;
   }
+
   const ImageHeaderInfo headerInfo = PeekHeader(filePath);
   const uint64_t fallbackFileSize =
       static_cast<uint64_t>(headerInfo.fileSize);
@@ -5154,6 +5160,92 @@ HRESULT CImageLoader::LoadWebP(LPCWSTR filePath, IWICBitmap **ppBitmap,
 // ----------------------------------------------------------------------------
 // AVIF (libavif + dav1d)
 // ----------------------------------------------------------------------------
+static const std::vector<float> &
+GetAvifThumbnailTransferLut(QuickView::TransferFunction transfer) {
+  static const auto pq = [] {
+    std::vector<float> values(65536);
+    for (size_t i = 0; i < values.size(); ++i)
+      values[i] = DecodePqToLinearScRgb(static_cast<float>(i) / 65535.0f);
+    return values;
+  }();
+  static const auto hlgScene = [] {
+    std::vector<float> values(65536);
+    for (size_t i = 0; i < values.size(); ++i) {
+      const float value = static_cast<float>(i) / 65535.0f;
+      values[i] =
+          value <= 0.5f
+              ? (value * value) / 3.0f
+              : (expf((value - 0.55991073f) / 0.17883277f) + 0.28466892f) /
+                    12.0f;
+    }
+    return values;
+  }();
+  return transfer == QuickView::TransferFunction::PQ ? pq : hlgScene;
+}
+
+static const std::vector<float> &GetHlgThumbnailOotfLut() {
+  static const auto lut = [] {
+    std::vector<float> values(65536);
+    for (size_t i = 0; i < values.size(); ++i) {
+      const float sceneLuma = static_cast<float>(i) / 65535.0f;
+      values[i] = powf(sceneLuma, 0.2f) * 12.5f;
+    }
+    return values;
+  }();
+  return lut;
+}
+
+static const std::vector<float> &GetHdrThumbnailToneMapLut() {
+  static const auto lut = [] {
+    constexpr float lutLinearPeak = 16.0f;
+    constexpr float exposure = 0.8f;
+    std::vector<float> values(65536);
+    for (size_t i = 0; i < values.size(); ++i) {
+      const float linear =
+          static_cast<float>(i) * (lutLinearPeak / 65535.0f) * exposure;
+      const float numerator = linear * (2.51f * linear + 0.03f);
+      const float denominator =
+          linear * (2.43f * linear + 0.59f) + 0.14f;
+      values[i] = denominator > 0.0f
+                      ? std::clamp(numerator / denominator, 0.0f, 1.0f)
+                      : 0.0f;
+    }
+    return values;
+  }();
+  return lut;
+}
+
+static const std::vector<uint8_t> &GetLinearToSrgb8Lut() {
+  static const auto lut = [] {
+    std::vector<uint8_t> values(65536);
+    for (size_t i = 0; i < values.size(); ++i) {
+      const float linear = static_cast<float>(i) / 65535.0f;
+      const float encoded =
+          linear <= 0.0031308f
+              ? linear * 12.92f
+              : 1.055f * powf(linear, 1.0f / 2.4f) - 0.055f;
+      values[i] = static_cast<uint8_t>(
+          std::clamp(encoded * 255.0f + 0.5f, 0.0f, 255.0f));
+    }
+    return values;
+  }();
+  return lut;
+}
+
+static size_t UnitFloatToLutIndex(float value) {
+  if (!std::isfinite(value))
+    return 0;
+  return static_cast<size_t>(
+      std::clamp(value * 65535.0f + 0.5f, 0.0f, 65535.0f));
+}
+
+static size_t LinearHdrToToneMapLutIndex(float value) {
+  if (!std::isfinite(value))
+    return 0;
+  return static_cast<size_t>(
+      std::clamp(value * (65535.0f / 16.0f) + 0.5f, 0.0f, 65535.0f));
+}
+
 HRESULT CImageLoader::LoadThumbAVIFFile(LPCWSTR filePath, int targetSize,
                                         ThumbData *pData) {
   if (!filePath || !pData || targetSize <= 0)
@@ -5183,24 +5275,20 @@ HRESULT CImageLoader::LoadThumbAVIFFile(LPCWSTR filePath, int targetSize,
   const int originalWidth = static_cast<int>(decoder->image->width);
   const int originalHeight = static_cast<int>(decoder->image->height);
   const int cropAxis = (std::min)(originalWidth, originalHeight);
+  const QuickView::TransferFunction transfer =
+      MapAvifTransferFunction(decoder->image->transferCharacteristics);
+  const bool isHdrTransfer =
+      transfer == QuickView::TransferFunction::PQ ||
+      transfer == QuickView::TransferFunction::HLG;
 
-  avifRGBImage rgb;
-  avifRGBImageSetDefaults(&rgb, decoder->image);
-  rgb.format = AVIF_RGB_FORMAT_BGRA;
-  rgb.depth = 8;
-  rgb.alphaPremultiplied = AVIF_TRUE;
-  rgb.maxThreads = 1;
-
-  const int fullStride = CalculateAlignedStride(originalWidth, 4);
-  std::vector<uint8_t> fullPixels(
-      static_cast<size_t>(fullStride) * originalHeight);
-  rgb.pixels = fullPixels.data();
-  rgb.rowBytes = static_cast<uint32_t>(fullStride);
-
-  result = avifImageYUVToRGB(decoder->image, &rgb);
-  avifDecoderDestroy(decoder);
-  if (result != AVIF_RESULT_OK)
-    return E_FAIL;
+  // ICC and presentation transforms are authoritative. The Shell route already
+  // handles them; do not produce a competing approximation in the direct path.
+  if (isHdrTransfer &&
+      ((decoder->image->icc.data && decoder->image->icc.size > 0) ||
+       decoder->image->transformFlags != 0)) {
+    avifDecoderDestroy(decoder);
+    return E_NOTIMPL;
+  }
 
   int outputWidth = originalWidth;
   int outputHeight = originalHeight;
@@ -5211,10 +5299,21 @@ HRESULT CImageLoader::LoadThumbAVIFFile(LPCWSTR filePath, int targetSize,
         1, static_cast<int>(std::ceil(originalWidth * scale)));
     outputHeight = (std::max)(
         1, static_cast<int>(std::ceil(originalHeight * scale)));
-    if (originalWidth <= originalHeight) {
+    if (originalWidth <= originalHeight)
       outputWidth = targetSize;
-    } else {
+    else
       outputHeight = targetSize;
+
+    // Downscale decoded YUV planes before RGB conversion. AV1 decoding cost is
+    // unchanged, but RGB memory, conversion, tone mapping, and upload become
+    // proportional to the requested thumbnail rather than the source image.
+    result = avifImageScale(decoder->image,
+                            static_cast<uint32_t>(outputWidth),
+                            static_cast<uint32_t>(outputHeight),
+                            &decoder->diag);
+    if (result != AVIF_RESULT_OK) {
+      avifDecoderDestroy(decoder);
+      return E_FAIL;
     }
   }
 
@@ -5223,24 +5322,129 @@ HRESULT CImageLoader::LoadThumbAVIFFile(LPCWSTR filePath, int targetSize,
   pData->stride = CalculateAlignedStride(outputWidth, 4);
   pData->pixels.resize(
       static_cast<size_t>(pData->stride) * outputHeight);
-  if (outputWidth == originalWidth && outputHeight == originalHeight) {
-    for (int y = 0; y < outputHeight; ++y) {
-      memcpy(pData->pixels.data() + static_cast<size_t>(y) * pData->stride,
-             fullPixels.data() + static_cast<size_t>(y) * fullStride,
-             static_cast<size_t>(outputWidth) * 4);
+
+  avifRGBImage rgb;
+  avifRGBImageSetDefaults(&rgb, decoder->image);
+  rgb.maxThreads = 1;
+
+  if (isHdrTransfer) {
+    rgb.format = AVIF_RGB_FORMAT_RGBA;
+    rgb.depth = 16;
+    rgb.alphaPremultiplied = AVIF_FALSE;
+    const int sourceStride = CalculateAlignedStride(outputWidth, 8);
+    std::vector<uint8_t> sourcePixels(
+        static_cast<size_t>(sourceStride) * outputHeight);
+    rgb.pixels = sourcePixels.data();
+    rgb.rowBytes = static_cast<uint32_t>(sourceStride);
+    result = avifImageYUVToRGB(decoder->image, &rgb);
+
+    if (result == AVIF_RESULT_OK) {
+      QuickView::ColorPrimaries sourcePrimaries =
+          MapAvifPrimaries(decoder->image->colorPrimaries);
+      if (sourcePrimaries == QuickView::ColorPrimaries::Unknown)
+        sourcePrimaries = QuickView::ColorPrimaries::Rec2020;
+      const auto gamut = ColorMath::MultiplyColorMatrices(
+          ColorMath::GetXyzToRgbMatrix(QuickView::ColorPrimaries::SRGB),
+          ColorMath::GetRgbToXyzMatrix(sourcePrimaries));
+      const auto &transferLut = GetAvifThumbnailTransferLut(transfer);
+      const auto &hlgOotfLut = GetHlgThumbnailOotfLut();
+      const auto &toneMapLut = GetHdrThumbnailToneMapLut();
+      const auto &srgbLut = GetLinearToSrgb8Lut();
+      const bool isHlg = transfer == QuickView::TransferFunction::HLG;
+      const float lumaR =
+          sourcePrimaries == QuickView::ColorPrimaries::Rec2020 ? 0.2627f
+                                                                 : 0.2126f;
+      const float lumaG =
+          sourcePrimaries == QuickView::ColorPrimaries::Rec2020 ? 0.6780f
+                                                                 : 0.7152f;
+      const float lumaB =
+          sourcePrimaries == QuickView::ColorPrimaries::Rec2020 ? 0.0593f
+                                                                 : 0.0722f;
+
+      for (int y = 0; y < outputHeight; ++y) {
+        const auto *src = reinterpret_cast<const uint16_t *>(
+            sourcePixels.data() + static_cast<size_t>(y) * sourceStride);
+        uint8_t *dst =
+            pData->pixels.data() + static_cast<size_t>(y) * pData->stride;
+        for (int x = 0; x < outputWidth; ++x) {
+          float r = transferLut[src[x * 4 + 0]];
+          float g = transferLut[src[x * 4 + 1]];
+          float b = transferLut[src[x * 4 + 2]];
+          float sourceLuma = lumaR * r + lumaG * g + lumaB * b;
+          if (isHlg && sourceLuma > 0.0f) {
+            const float ootf =
+                hlgOotfLut[UnitFloatToLutIndex(sourceLuma)];
+            r *= ootf;
+            g *= ootf;
+            b *= ootf;
+            sourceLuma *= ootf;
+          }
+          if (sourceLuma > 0.0f) {
+            const float mappedLuma =
+                toneMapLut[LinearHdrToToneMapLutIndex(sourceLuma)];
+            const float toneScale = mappedLuma / sourceLuma;
+            r *= toneScale;
+            g *= toneScale;
+            b *= toneScale;
+          }
+
+          float outR =
+              gamut.m[0][0] * r + gamut.m[0][1] * g + gamut.m[0][2] * b;
+          float outG =
+              gamut.m[1][0] * r + gamut.m[1][1] * g + gamut.m[1][2] * b;
+          float outB =
+              gamut.m[2][0] * r + gamut.m[2][1] * g + gamut.m[2][2] * b;
+          const float y709 =
+              0.2126f * outR + 0.7152f * outG + 0.0722f * outB;
+          const float maxChannel = (std::max)({outR, outG, outB});
+          const float minChannel = (std::min)({outR, outG, outB});
+          float gamutScale = 1.0f;
+          if (maxChannel > 1.0f && maxChannel > y709) {
+            gamutScale = (std::min)(
+                gamutScale, (1.0f - y709) / (maxChannel - y709));
+          }
+          if (minChannel < 0.0f && y709 > minChannel) {
+            gamutScale = (std::min)(
+                gamutScale, y709 / (y709 - minChannel));
+          }
+          outR = std::clamp(y709 + gamutScale * (outR - y709), 0.0f, 1.0f);
+          outG = std::clamp(y709 + gamutScale * (outG - y709), 0.0f, 1.0f);
+          outB = std::clamp(y709 + gamutScale * (outB - y709), 0.0f, 1.0f);
+
+          const uint32_t alpha = (src[x * 4 + 3] + 128u) / 257u;
+          const uint32_t encodedR = srgbLut[UnitFloatToLutIndex(outR)];
+          const uint32_t encodedG = srgbLut[UnitFloatToLutIndex(outG)];
+          const uint32_t encodedB = srgbLut[UnitFloatToLutIndex(outB)];
+          dst[x * 4 + 0] =
+              static_cast<uint8_t>((encodedB * alpha + 127u) / 255u);
+          dst[x * 4 + 1] =
+              static_cast<uint8_t>((encodedG * alpha + 127u) / 255u);
+          dst[x * 4 + 2] =
+              static_cast<uint8_t>((encodedR * alpha + 127u) / 255u);
+          dst[x * 4 + 3] = static_cast<uint8_t>(alpha);
+        }
+      }
     }
   } else {
-    ImageLoaderSimd::ResizeBilinear(
-        fullPixels.data(), originalWidth, originalHeight, fullStride,
-        pData->pixels.data(), outputWidth, outputHeight, pData->stride);
+    rgb.format = AVIF_RGB_FORMAT_BGRA;
+    rgb.depth = 8;
+    rgb.alphaPremultiplied = AVIF_TRUE;
+    rgb.pixels = pData->pixels.data();
+    rgb.rowBytes = static_cast<uint32_t>(pData->stride);
+    result = avifImageYUVToRGB(decoder->image, &rgb);
   }
+
+  avifDecoderDestroy(decoder);
+  if (result != AVIF_RESULT_OK)
+    return E_FAIL;
 
   pData->origWidth = originalWidth;
   pData->origHeight = originalHeight;
   pData->fileSize = static_cast<uint64_t>(avifData.size());
   pData->isValid = true;
   pData->isBlurry = cropAxis > targetSize;
-  pData->loaderName = L"libavif Gallery";
+  pData->loaderName =
+      isHdrTransfer ? L"libavif Gallery HDR-to-SDR" : L"libavif Gallery";
   return S_OK;
 }
 
